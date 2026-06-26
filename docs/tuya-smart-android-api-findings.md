@@ -235,3 +235,49 @@ A practical read-only flow inferred from the Android app:
 - The APK/decompiled source should not be committed to this repository. Keep
   this repository to derived notes, tooling, and clean integration code.
 
+## MITM Patch Status
+
+Test device: Samsung S21 Ultra, package `com.tuya.smart`, Tuya Smart
+`7.8.6` / versionCode `840`.
+
+Installed patched build in the local reverse-engineering workspace:
+
+- Base APK: `build/signed/com.tuya.smart.mitm12.base.apk`
+- Arm64 split: `build/signed/split_config.arm64_v8a.mitm11killfunc.apk`
+- Signing key fingerprint used for the patched app:
+  `AC:F3:3A:AD:A7:F6:1C:85:CC:B4:4A:8C:FA:E8:AF:A3:73:1A:B3:B8:02:9D:B4:97:8C:BA:B2:64:B4:55:D9:54`
+
+Patch summary:
+
+- Added user CA trust to `force_https_config_international.xml`.
+- Disabled OkHttp `CertificatePinner.check(...)` methods.
+- Patched `SecretToolUtil`, `Dead`, and related Java exit/kill paths that show
+  the "not official" signature guard.
+- Added the patched signing certificate fingerprint to app config strings.
+- Patched `ResignMonitor.b(...)` to report signature check success.
+- Patched `JNICLibrary.testSign(...)` to avoid calling the native signature
+  check.
+- Patched native `libthing_security.so` function at `0x14794` to return early.
+  This function delayed and then called `exit(0)`, causing the app to close
+  cleanly after launch when re-signed.
+- Patched `NetworkErrorTipManager.j(...)` to ignore certificate-error UI type
+  `3`, which otherwise shows the "credential setting" certificate/proxy warning.
+
+Runtime notes:
+
+- Screen timeout was set to `600000` ms and `stay_on_while_plugged_in` to `3`
+  for longer MITM sessions.
+- Android global proxy was set to `192.168.2.2:8080` for HTTP CONNECT MITM.
+- A regular HTTP `mitmdump` listener was started on `0.0.0.0:8080`.
+- The patched app stayed alive for more than 45 seconds after launch with the
+  `libthing_security.so` direct function patch. A broader PLT patch of
+  `exit`/`kill`/`abort` caused a SIGSEGV because the native self-exit path fell
+  through into `JNI_OnLoad`.
+
+Open item:
+
+- The app can reach the welcome/login UI under the patched build. The tested
+  guest/login-navigation screens did not yet produce useful Tuya API flows in
+  `mitmdump`; more interaction or a logged-in session may be needed to capture
+  live signed requests. Static API names and versions above remain the current
+  reliable source for login, home list, and device list behavior.
