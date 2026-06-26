@@ -242,7 +242,7 @@ Test device: Samsung S21 Ultra, package `com.tuya.smart`, Tuya Smart
 
 Installed patched build in the local reverse-engineering workspace:
 
-- Base APK: `build/signed/com.tuya.smart.mitm12.base.apk`
+- Base APK: `build/signed/com.tuya.smart.mitm13.base.apk`
 - Arm64 split: `build/signed/split_config.arm64_v8a.mitm11killfunc.apk`
 - Signing key fingerprint used for the patched app:
   `AC:F3:3A:AD:A7:F6:1C:85:CC:B4:4A:8C:FA:E8:AF:A3:73:1A:B3:B8:02:9D:B4:97:8C:BA:B2:64:B4:55:D9:54`
@@ -250,6 +250,9 @@ Installed patched build in the local reverse-engineering workspace:
 Patch summary:
 
 - Added user CA trust to `force_https_config_international.xml`.
+- Bundled the local mitmproxy CA as `@raw/mitmproxy_ca` and added it to the
+  same trust anchors. This made Tuya app traffic decryptable without installing
+  a user CA certificate into Android settings.
 - Disabled OkHttp `CertificatePinner.check(...)` methods.
 - Patched `SecretToolUtil`, `Dead`, and related Java exit/kill paths that show
   the "not official" signature guard.
@@ -269,20 +272,51 @@ Runtime notes:
   for longer MITM sessions.
 - Android global proxy was set to `192.168.2.2:8080` for HTTP CONNECT MITM.
 - A regular HTTP `mitmdump` listener was started on `0.0.0.0:8080`.
-- The patched app connected through the proxy to `a1.tuyaus.com:443`, so Android
-  proxy routing is working for Tuya traffic.
-- The current blocking error is TLS trust: `mitmdump` reported that the client
-  did not trust the proxy certificate for `a1.tuyaus.com`. The next dynamic
-  capture step is to install the matching mitmproxy CA certificate on the test
-  phone, or run capture with the CA that is already trusted by the phone.
+- The patched app connected through the proxy to `a1.tuyaus.com:443`, and after
+  bundling the mitmproxy CA, `mitmdump` decrypted Tuya HTTPS traffic to
+  `https://a1.tuyaus.com/api.json`.
 - The patched app stayed alive for more than 45 seconds after launch with the
   `libthing_security.so` direct function patch. A broader PLT patch of
   `exit`/`kill`/`abort` caused a SIGSEGV because the native self-exit path fell
   through into `JNI_OnLoad`.
 
+Live MITM capture:
+
+- Capture file in the reverse-engineering workspace:
+  `mitm/tuya-20260627-000323.mitm`.
+- Endpoint: `POST https://a1.tuyaus.com/api.json` over HTTP/2.
+- Content type: `application/x-www-form-urlencoded`.
+- User-Agent: `Thing-UA=APP/Android/7.8.6/SDK/7.8.0`.
+- Common request fields observed: `appVersion`, `appRnVersion`, `sign`,
+  `channel`, `deviceId`, `chKey`, `osSystem`, `ttid`, `et`, `nd`,
+  `sdkVersion`, `platform`, `requestId`, `lang`, `a`, `clientId`, `os`,
+  `timeZoneId`, `cp`, `v`, `deviceCoreVersion`, `bizData`, `time`, and
+  sometimes encrypted `postData`.
+- The patched/re-signed app receives `ILLEGAL_CLIENT_ID` /
+  `Invalid client;No access` from Tuya, so the live capture confirms transport
+  and request shape but does not yet produce successful business responses.
+
+Live API names observed during launch, privacy acceptance, and guest flow:
+
+| API name | Version |
+| --- | --- |
+| `smartlife.m.app.ad.list` | `2.0` |
+| `smartlife.m.language.update` | `2.0` |
+| `smartlife.m.app.version.upgrade` | `4.0` |
+| `smartlife.m.pull.config.data.for.app` | `1.0` |
+| `smartlife.m.user.mobile.sendcode.whitelist` | `2.0` |
+| `smartlife.m.app.smart.privacy.setting` | `1.0` |
+| `smartlife.m.country.list.international` | `1.0` |
+| `m.life.country.list.international` | `1.0` |
+| `smartlife.p.time.get` | `1.0` |
+| `m.life.app.dynamic.config.get` | `1.0` |
+| `smartlife.m.miniprogram.kit.whitelist.query` | `1.0` |
+| `smartlife.m.user.guest.register` | `1.0` |
+
 Open item:
 
-- The app can reach the welcome/login UI under the patched build. Dynamic API
-  capture is now waiting on trusted CA setup for the proxy. Static API names and
-  versions above remain the current reliable source for login, home list, and
-  device list behavior.
+- Static API names and versions above remain the current reliable source for
+  successful login, home list, and device list behavior. A fully accepted client
+  identity, or a patch that preserves Tuya's expected client/signature state
+  while still allowing MITM, is needed to capture successful authenticated
+  responses from the live app.
