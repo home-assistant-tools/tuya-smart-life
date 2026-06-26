@@ -269,6 +269,12 @@ Runtime notes:
   for longer MITM sessions.
 - Android global proxy was set to `192.168.2.2:8080` for HTTP CONNECT MITM.
 - A regular HTTP `mitmdump` listener was started on `0.0.0.0:8080`.
+- The patched app connected through the proxy to `a1.tuyaus.com:443`, so Android
+  proxy routing is working for Tuya traffic.
+- The current blocking error is TLS trust: `mitmdump` reported that the client
+  did not trust the proxy certificate for `a1.tuyaus.com`. The next dynamic
+  capture step is to install the matching mitmproxy CA certificate on the test
+  phone, or run capture with the CA that is already trusted by the phone.
 - The patched app stayed alive for more than 45 seconds after launch with the
   `libthing_security.so` direct function patch. A broader PLT patch of
   `exit`/`kill`/`abort` caused a SIGSEGV because the native self-exit path fell
@@ -276,8 +282,7 @@ Runtime notes:
 
 Open item:
 
-- The app can reach the welcome/login UI under the patched build. The tested
-  guest/login-navigation screens did not yet produce useful Tuya API flows in
-  `mitmdump`; more interaction or a logged-in session may be needed to capture
-  live signed requests. Static API names and versions above remain the current
-  reliable source for login, home list, and device list behavior.
+- The app can reach the welcome/login UI under the patched build. Dynamic API
+  capture is now waiting on trusted CA setup for the proxy. Static API names and
+  versions above remain the current reliable source for login, home list, and
+  device list behavior.
