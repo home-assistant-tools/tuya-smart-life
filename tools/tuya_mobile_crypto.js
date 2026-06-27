@@ -30,6 +30,10 @@ function buildSignInput(params) {
     .join("||");
 }
 
+function requestSign(signInput, nativeKey) {
+  return crypto.createHmac("sha256", nativeKey).update(signInput, "utf8").digest("hex");
+}
+
 function verifyResponseSignature(response, key) {
   if (response.result === undefined || response.t === undefined || !response.sign) return false;
   const signInput = `result=${response.result}||t=${response.t}||${key.toString("utf8")}`;
@@ -56,6 +60,8 @@ function usage() {
   console.error(`Usage:
   tuya_mobile_crypto.js post-md5 <postData>
   tuya_mobile_crypto.js sign-input '<params-json>'
+  tuya_mobile_crypto.js request-sign --native-key-hex <hex> --input '<canonical-input>'
+  tuya_mobile_crypto.js request-sign --native-key-text <text> --input '<canonical-input>'
   tuya_mobile_crypto.js decrypt-response --key-hex <hex> --response '<response-json>' [--verify]`);
   process.exit(2);
 }
@@ -77,6 +83,15 @@ if (command === "post-md5") {
 } else if (command === "sign-input") {
   if (args.length !== 1) usage();
   console.log(buildSignInput(JSON.parse(args[0])));
+} else if (command === "request-sign") {
+  const signInput = takeOption(args, "--input");
+  const hasKeyHex = args.includes("--native-key-hex");
+  const hasKeyText = args.includes("--native-key-text");
+  if (hasKeyHex === hasKeyText) usage();
+  const nativeKey = hasKeyHex
+    ? Buffer.from(takeOption(args, "--native-key-hex"), "hex")
+    : Buffer.from(takeOption(args, "--native-key-text"), "utf8");
+  console.log(requestSign(signInput, nativeKey));
 } else if (command === "decrypt-response") {
   const keyHex = takeOption(args, "--key-hex");
   const responseJson = takeOption(args, "--response");

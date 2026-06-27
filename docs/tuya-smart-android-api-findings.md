@@ -582,6 +582,43 @@ key=value||key=value||...
 swappedMd5 = md5[8:16] + md5[0:8] + md5[24:32] + md5[16:24]
 ```
 
+Native request-signing result from `libthing_security.so`:
+
+```text
+sign = lower_hex(HMAC-SHA256(nativeSigningKey, canonicalSignInputUtf8))
+```
+
+Static reverse notes:
+
+- `libthing_security.so` JNI table registers
+  `doCommandNative(Context, int, byte[], byte[], boolean)` at `0x14938`.
+- `doCommandNative(command=1)` branches at `0x14f00`, reads the canonical
+  sign input byte array, loads the native signing key from a libc++ string at
+  global offset `0x3ab60`, and converts the 32-byte digest to lowercase hex in
+  the loop around `0x1544c`.
+- The digest routine called from command `1` is at `0x18458`. Its setup matches
+  HMAC: key normalization, `0x36` ipad, `0x5c` opad, inner hash, and outer hash.
+- The descriptor selector at `0x181bc(6)` selects the SHA-256 descriptor
+  (`0x20` byte output). `0x181bc(5)` selects SHA-224 and is not the final
+  request-sign path.
+- The native signing key is initialized by `doCommandNative(command=0)`, which
+  uses app config bytes plus the certificate/client identity path and calls
+  `read_keys_from_content` from `libthing_security_algorithm.so`.
+
+Brute-force/guess check against a captured accepted request:
+
+- Plain `sha256(canonicalInput)`, `md5(canonicalInput)`, and HMAC-SHA256 with
+  visible request fields such as `chKey`, `clientId`, `deviceId`, `sid`,
+  `ttid`, concatenations of those fields, and the known certificate fingerprint
+  did not reproduce the captured `sign`.
+- This confirms the final request key is not directly one of the visible
+  envelope fields. It must be obtained by reproducing command `0` key
+  derivation or dumping the initialized native string in-process.
+- Runtime Frida verification on the connected Android device confirmed
+  `match=true` for command `1`: native output matched HMAC-SHA256 recomputed
+  from the initialized native key and the same canonical input. The key bytes
+  were not stored in this repository.
+
 Response decryption for normal `et=3` API calls:
 
 1. Parse encrypted response as `BusinessEncryptResponse` containing `result`,
@@ -600,20 +637,25 @@ md5("result=" + result + "||t=" + t + "||" + aesKeyAsUtf8)
 7. Gunzip the plaintext if it is gzip-compressed.
 8. Decode as UTF-8 JSON.
 
-The remaining native dependency is `getEncryptoKey(...)` and command `1`
-signing. These are currently solved by running inside the patched Android app
-with Frida/Gadget, not by a fully standalone reimplementation.
+The remaining native dependencies for a fully standalone implementation are
+`getEncryptoKey(...)` and command `0` native signing-key derivation. Command `1`
+final request signing is now identified as HMAC-SHA256 once the native signing
+key is known.
 
 Tooling added in this repository:
 
 - `tools/frida_tuya_network_crypto_dump.js`: hooks native sign, request
   encryption key derivation, encrypted request plaintext, and decrypted response
   plaintext.
+- `tools/frida_tuya_sign_key_probe.js`: reads the initialized native signing
+  key string in-process, logs only key length/hash by default, and verifies that
+  command `1` output equals HMAC-SHA256 over the canonical input.
 - `tools/tuya_mobile_crypto.js`: reproduces Java-side sign input formatting,
-  swapped `postData` MD5, and AES-GCM response decryption when a request key is
-  available.
+  swapped `postData` MD5, final HMAC-SHA256 request signing when the native key
+  is available, and AES-GCM response decryption when a request key is available.
 - `tools/tuya_mobile_crypto.py`: Python helper for Java-side sign input and
-  swapped `postData` MD5.
+  swapped `postData` MD5, plus final HMAC-SHA256 request signing when the native
+  key is available.
 
 Plaintext confirmed with the Frida hook:
 
@@ -654,5 +696,5 @@ Open item:
 - `postData` and most accepted responses are still encrypted by the mobile SDK.
   The transport, accepted client identity, endpoint names, versions, and request
   envelope are now captured successfully. The remaining work for a clean
-  non-app implementation is reproducing or reusing SDK encryption/decryption
-  and native signing outside the patched Android process.
+  non-app implementation is reproducing or reusing SDK encryption/decryption and
+  command `0` native key derivation outside the patched Android process.

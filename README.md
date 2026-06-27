@@ -39,12 +39,17 @@ decryption when the per-request AES key is known:
 ```bash
 node tools/tuya_mobile_crypto.js post-md5 '{"homeId":92258848}'
 node tools/tuya_mobile_crypto.js sign-input '{"a":"m.life.home.space.list","v":"1.0"}'
+node tools/tuya_mobile_crypto.js request-sign --native-key-hex <key> --input '<canonical-input>'
 node tools/tuya_mobile_crypto.js decrypt-response --key-hex <key> --response '<json>'
 ```
 
 `tools/frida_tuya_network_crypto_dump.js` hooks the Android app to log native
 sign inputs/results, per-request encryption keys, encrypted request plaintext,
 and decrypted response plaintext.
+
+`tools/frida_tuya_sign_key_probe.js` verifies the native request-signing
+algorithm in-process. It checks that command `1` equals HMAC-SHA256 with the
+initialized native key and does not print the key bytes by default.
 
 The APK and decompiled application sources are intentionally not committed here.
 Only the derived API notes are stored in this repository.

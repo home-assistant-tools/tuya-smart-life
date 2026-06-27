@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import hashlib
+import hmac
 import json
 import sys
 
@@ -55,6 +56,10 @@ def build_sign_input(params):
     return "||".join(parts)
 
 
+def request_sign(sign_input, native_key):
+    return hmac.new(native_key, sign_input.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def verify_response_signature(response, key):
     result = response.get("result")
     timestamp = response.get("t")
@@ -74,6 +79,17 @@ def command_post_md5(args):
     print(post_data_md5_hex(args.post_data))
 
 
+def command_request_sign(args):
+    if bool(args.native_key_hex) == bool(args.native_key_text):
+        raise SystemExit("provide exactly one of --native-key-hex or --native-key-text")
+    native_key = (
+        bytes.fromhex(args.native_key_hex)
+        if args.native_key_hex
+        else args.native_key_text.encode("utf-8")
+    )
+    print(request_sign(args.input, native_key))
+
+
 def command_decrypt_response(args):
     raise SystemExit("decrypt-response is implemented in tools/tuya_mobile_crypto.js")
 
@@ -89,6 +105,12 @@ def main():
     post_md5 = subparsers.add_parser("post-md5", help="Compute swapped MD5 used for signed postData")
     post_md5.add_argument("post_data")
     post_md5.set_defaults(func=command_post_md5)
+
+    request = subparsers.add_parser("request-sign", help="Compute final native request sign when the native signing key is known")
+    request.add_argument("--input", required=True, help="Canonical sign input from sign-input")
+    request.add_argument("--native-key-hex", help="Hex of raw native signing key bytes")
+    request.add_argument("--native-key-text", help="Native signing key as UTF-8 text")
+    request.set_defaults(func=command_request_sign)
 
     decrypt = subparsers.add_parser("decrypt-response", help="Decrypt an et=3 response when the native key is known")
     decrypt.add_argument("--key-hex", required=True, help="Hex of raw AES key bytes from getEncryptoKey")
