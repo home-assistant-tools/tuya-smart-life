@@ -25,6 +25,23 @@ FAN_POWER_DP_ID = "1"
 FAN_SPEED_DP_ID = "3"
 CHILD_PROTOCOL_FALLBACKS = ("3.4", "3.5", "3.3")
 NO_FALLBACK_RESPONSE = object()
+BROADCAST_DEVICE_ID_KEYS = ("devId", "deviceId", "device_id", "id", "gwId")
+BROADCAST_NODE_ID_KEYS = (
+    "cid",
+    "nodeId",
+    "node_id",
+    "node_id_hex",
+    "subId",
+    "sub_id",
+)
+BROADCAST_VERSION_KEYS = (
+    "version",
+    "ver",
+    "pv",
+    "protocolVersion",
+    "protocol_version",
+)
+VALID_PROTOCOL_VERSIONS = ("3.1", "3.2", "3.3", "3.4", "3.5")
 NON_BUTTON_NAME_PARTS = (
     "backlight",
     "child lock",
@@ -221,30 +238,61 @@ class TuyaLocalRuntime:
             self._apply_discovery_payload(payload, addr[0])
 
     def _apply_discovery_payload(self, payload: dict[str, Any], fallback_ip: str) -> None:
-        gw_id = payload.get("gwId") or payload.get("devId") or payload.get("id")
-        if not gw_id:
-            return
-        device = self.devices.get(str(gw_id))
+        for record, source_ip in _iter_broadcast_records(payload, fallback_ip):
+            self._apply_discovery_record(record, source_ip)
+
+    def _apply_discovery_record(self, payload: dict[str, Any], fallback_ip: str) -> None:
+        device = self._broadcast_device(payload)
         if not device:
             return
 
         ip = _lan_ip(payload.get("ip") or fallback_ip)
-        version = payload.get("version") or payload.get("ver")
+        version = _broadcast_protocol_version(payload)
         changed = False
-        if ip and ip != device.ip:
+
+        if ip and not device.is_child and ip != device.ip:
             device.ip = str(ip)
             changed = True
-        if version and str(version) != device.protocol_version:
-            device.protocol_version = str(version)
+        if version and version != device.protocol_version:
+            device.protocol_version = version
             changed = True
         if changed:
-            self._tinytuya_devices.pop(device.dev_id, None)
+            self._clear_tinytuya_cache_for(device.dev_id)
             _LOGGER.debug(
                 "Tuya broadcast updated %s ip=%s version=%s",
                 device.dev_id,
                 device.ip,
                 device.protocol_version,
             )
+
+    def _broadcast_device(
+        self,
+        payload: dict[str, Any],
+    ) -> TuyaDeviceDescription | None:
+        node_candidates = _broadcast_candidates(payload, BROADCAST_NODE_ID_KEYS)
+        if node_candidates:
+            for device in self.devices.values():
+                if not device.is_child:
+                    continue
+                if _identifier_matches(device.node_id, node_candidates):
+                    return device
+                if _identifier_matches(device.uuid, node_candidates):
+                    return device
+                if _identifier_matches(device.mac, node_candidates):
+                    return device
+
+        for candidate in _broadcast_candidates(payload, BROADCAST_DEVICE_ID_KEYS):
+            device = self.devices.get(candidate)
+            if device:
+                return device
+
+        return None
+
+    def _clear_tinytuya_cache_for(self, dev_id: str) -> None:
+        self._tinytuya_devices.pop(dev_id, None)
+        for device in self.devices.values():
+            if device.parent_dev_id == dev_id:
+                self._tinytuya_devices.pop(device.dev_id, None)
 
     def switch_button_dps(self) -> list[tuple[TuyaDeviceDescription, str, bool, str]]:
         items: list[tuple[TuyaDeviceDescription, str, bool, str]] = []
@@ -341,7 +389,10 @@ class TuyaLocalRuntime:
         original_parent_version = parent.protocol_version
         original_child_version = device.protocol_version
         last_response: Any = None
-        for version in _child_protocol_candidates(parent.protocol_version):
+        for version in _child_protocol_candidates(
+            device.protocol_version,
+            parent.protocol_version,
+        ):
             parent.protocol_version = version
             device.protocol_version = version
             self._tinytuya_devices.pop(parent.dev_id, None)
@@ -460,6 +511,84 @@ class TuyaLocalRuntime:
         return tuya_device
 
 
+def _iter_broadcast_records(
+    payload: dict[str, Any],
+    fallback_ip: str,
+) -> list[tuple[dict[str, Any], str]]:
+    records: list[tuple[dict[str, Any], str]] = []
+    pending: list[tuple[Any, str]] = [(payload, fallback_ip)]
+    while pending:
+        item, source_ip = pending.pop()
+        if isinstance(item, list):
+            pending.extend((value, source_ip) for value in item)
+            continue
+        if not isinstance(item, dict):
+            continue
+
+        item_ip = _lan_ip(item.get("ip")) or source_ip
+        records.append((item, item_ip))
+        for value in item.values():
+            if isinstance(value, (dict, list)):
+                pending.append((value, item_ip))
+    return records
+
+
+def _broadcast_candidates(
+    payload: dict[str, Any],
+    keys: tuple[str, ...],
+) -> list[str]:
+    candidates: list[str] = []
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            candidates.append(text)
+    return candidates
+
+
+def _identifier_matches(value: str | None, candidates: list[str]) -> bool:
+    if not value:
+        return False
+    value_forms = set(_identifier_forms(value))
+    return any(
+        value_forms.intersection(_identifier_forms(candidate))
+        for candidate in candidates
+    )
+
+
+def _identifier_forms(value: Any) -> tuple[str, ...]:
+    text = str(value).strip()
+    if not text:
+        return ()
+    compact = text.replace(":", "").replace("-", "").lower()
+    lower = text.lower()
+    if compact == lower:
+        return (text, lower)
+    return (text, lower, compact)
+
+
+def _broadcast_protocol_version(payload: dict[str, Any]) -> str | None:
+    for key in BROADCAST_VERSION_KEYS:
+        version = _valid_protocol_version(payload.get(key))
+        if version:
+            return version
+    return None
+
+
+def _valid_protocol_version(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    for version in VALID_PROTOCOL_VERSIONS:
+        if text == version or text.startswith(f"{version}."):
+            return version
+    return None
+
+
 def _protocol_version(value: str | None) -> float:
     if not value:
         return 3.3
@@ -471,11 +600,12 @@ def _protocol_version(value: str | None) -> float:
         return 3.3
 
 
-def _child_protocol_candidates(current: str | None) -> list[str]:
-    current_text = str(current).strip() if current else ""
-    versions = [version for version in CHILD_PROTOCOL_FALLBACKS if version != current_text]
-    if current_text and current_text not in versions:
-        versions.append(current_text)
+def _child_protocol_candidates(*preferred: str | None) -> list[str]:
+    versions: list[str] = []
+    for value in (*preferred, *CHILD_PROTOCOL_FALLBACKS):
+        version = _valid_protocol_version(value)
+        if version and version not in versions:
+            versions.append(version)
     return versions
 
 

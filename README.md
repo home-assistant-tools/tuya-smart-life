@@ -14,7 +14,8 @@ Integration này không cần tạo Tuya IoT Cloud project, không cần nhập 
 - Lấy danh sách thiết bị, local key, hub/child topology, MAC/UUID và DPS ban đầu
   từ Tuya mobile API.
 - Điều khiển local bằng TinyTuya qua IP LAN, không dùng cloud API để bật/tắt.
-- Theo dõi UDP broadcast và quét LAN định kỳ để cập nhật IP khi thiết bị đổi IP.
+- Theo dõi UDP broadcast và quét LAN định kỳ để cập nhật IP/protocol version khi
+  thiết bị hoặc hub đổi thông tin LAN.
 - Tự loại bỏ IP public/WAN mà mobile API trả về, chỉ dùng IP local/private cho
   lệnh local.
 - Tạo switch entity cho các nút/gang điều khiển lấy từ `dataPointInfo.dps`.
@@ -90,6 +91,11 @@ Home Assistant -> IP LAN của thiết bị/hub -> TinyTuya -> Tuya local protoc
 Với thiết bị con sau hub, lệnh được gửi qua hub cha bằng `parentDevId` và
 `node_id`/`cid` khi Tuya trả topology đầy đủ.
 
+Với thiết bị Zigbee/BLE sau hub, integration cũng đọc UDP broadcast của hub để
+cập nhật protocol version cho từng child khi broadcast có `cid`/`nodeId`. Điều
+này giúp tránh lỗi local kiểu `Check device key or version` do child dùng
+protocol khác hub.
+
 ## Nút Công Tắc Và DPS
 
 Tuya mô tả các nút/gang của công tắc bằng DPS:
@@ -135,7 +141,8 @@ HACS sẽ thấy các phiên bản GitHub release của repository này. Để c
 - Nếu mobile API trả IP public/WAN, integration sẽ bỏ qua IP đó và chờ broadcast
   hoặc LAN scan tìm IP private.
 - Một số thiết bị có thể trả local key/version không khớp; khi đó TinyTuya sẽ
-  báo lỗi kiểu `Check device key or version`.
+  báo lỗi kiểu `Check device key or version`. Integration sẽ ưu tiên version
+  học được từ UDP broadcast và thử fallback protocol cho thiết bị con sau hub.
 
 ### Chọn nhầm nhà ở LAN khác
 
