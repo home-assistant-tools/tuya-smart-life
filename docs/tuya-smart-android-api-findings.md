@@ -18,6 +18,134 @@ Important observation: the app does not expose ordinary REST paths such as
 `ApiParams(apiName, version, countryCode?)`. Host routing, session handling,
 request signing, and transport are handled by the Tuya SDK.
 
+## Required API Map
+
+All calls below are mobile ATOP calls sent as `POST /api.json` form data. The
+important envelope fields are `a`, `v`, `sid`, `gid`, `postData`, `time`,
+`requestId`, `chKey`, and `sign`. For `et=3`, `postData` and `result` are
+encrypted by the mobile SDK.
+
+### 1. Email/Password Login
+
+Observed successful account login sequence:
+
+| Step | API name | Version | Session | Main `postData` fields | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Login token | `smartlife.m.user.username.token.get` | `2.0` | No | `countryCode`, `username`, `isUid` | First call before password login. `username` is the email for email login. |
+| Password login | `smartlife.m.user.email.password.login` | `3.0` | No | `countryCode`, `email`, `passwd`, `token`, `ifencrypt`, `extInfo` | Confirmed live through the Android app. |
+
+Static SDK wrappers also contain older/internal `thing.m.*` names:
+
+| Purpose | API name | Version |
+| --- | --- | --- |
+| Login token | `thing.m.user.username.token.get` | `2.0` |
+| Email password login | `thing.m.user.email.password.login` | likely `2.0` |
+| Mobile password login | `thing.m.user.mobile.passwd.login` | `4.0` |
+
+### 2. List Homes
+
+| Purpose | API name | Version | Session | Main `postData` fields | Important response fields |
+| --- | --- | --- | --- | --- | --- |
+| List homes/spaces | `m.life.home.space.list` | `1.0` | Yes | none observed | `homeId`/`gid`, `name`, `geoName`, `longitude`, `latitude`, role/admin fields |
+| Home detail | `m.life.location.get` | `3.4` | Yes | `gid` | Detailed `HomeResponseBean` for one home |
+
+The live account capture loaded home `Kiara` with `gid=92258848`.
+
+### 3. List Devices And Hub/Child Topology
+
+The app usually refreshes home devices through a batch call:
+
+| Purpose | API name | Version | Session | Main `postData` fields |
+| --- | --- | --- | --- | --- |
+| Batch wrapper | `smartlife.m.api.batch.invoke` or `thing.m.api.batch.invoke` | `1.0` | Yes | `gid`, `apis` |
+
+Useful nested APIs inside the batch:
+
+| Purpose | API name | Version | Main fields |
+| --- | --- | --- | --- |
+| Devices in home | `m.life.my.group.device.list` | `2.2` | `gid` |
+| Device groups | `m.life.my.group.device.group.list` | `4.3` | `gid` |
+| Device relation list | `m.life.my.group.device.relation.list` | `3.2` | `gid` |
+| Mesh list | `m.life.my.group.mesh.list` | `3.1` | `gid` |
+| Sort/order list | `m.life.my.group.device.sort.list` | `2.1` | `gid` |
+| Device reference info | `m.life.device.ref.info.my.list` | `7.2` | `gid`, `zigbeeGroup=true` |
+| Shared devices | `thing.m.my.shared.device.list` | `3.2` | current user/session |
+| Shared groups | `thing.m.my.shared.device.group.list` | likely `2.0` | current user/session |
+
+Direct calls for detail and subdevices:
+
+| Purpose | API name | Version | Main `postData` fields | Return model |
+| --- | --- | --- | --- | --- |
+| Device detail | `thing.m.device.get` | `4.1` | `devId`, optional request `gid` | `DeviceRespBean` |
+| Hub subdevice list | `thing.m.device.sub.list` | `2.1` | `meshId` | `ArrayList<DeviceRespBean>` |
+| One subdevice detail | `thing.m.device.sub.get` | `2.1` | `meshId`, `devId` | `DeviceRespBean` |
+| Local/direct device list | `m.life.app.smart.local.device.list` | `1.1` | `homeId`, `groupType=homeGroup` | `ThingLocalDeviceListDataBean.deviceList` |
+
+Device fields to preserve from `DeviceRespBean`:
+
+| Field | Meaning |
+| --- | --- |
+| `devId` | Tuya device id |
+| `name` | Display name |
+| `productId`, `productVer`, `productInfo.category`, `productInfo.categoryCode` | Product/category metadata |
+| `uuid`, `mac`, `ip` | Hardware/network identifiers when present |
+| `localKey`, `devKey`, `secKey` | Local protocol credentials when returned |
+| `deviceTopo.meshId` | Mesh/gateway context |
+| `deviceTopo.nodeId` | Subdevice node id |
+| `deviceTopo.parentDevId` | Parent gateway/hub device id |
+| `communication.communicationModes` | Transport modes, useful for Zigbee/BLE/Wi-Fi classification |
+| `communication.connectionStatus` | Connectivity status |
+| `meta` | Extra flags such as Matter bridge gateway/subdevice |
+
+Topology inference used by the app model:
+
+1. Build a map of `devId -> DeviceRespBean` from the home device list.
+2. A device is a child/subdevice if `deviceTopo.parentDevId` is non-empty.
+   Its parent hub is that `parentDevId`.
+3. If `parentDevId` is empty but `deviceTopo.meshId` is non-empty, treat
+   `meshId` as the mesh/gateway context. Resolve it to a hub by matching a
+   device with that `devId`, or by calling `thing.m.device.sub.list`.
+4. A hub/gateway is any device referenced by another device's
+   `parentDevId`, any device with a subdevice list, or a Matter bridge gateway
+   indicated by `meta` containing `matterBridgeGateway`.
+5. Matter bridge children can also be flagged by `meta` containing
+   `matterBridgeSub`.
+
+### 4. Local Key, IP, And BLE Address
+
+| Data needed | Preferred source | Fallback/source notes |
+| --- | --- | --- |
+| Local key | `thing.m.device.key.get` v1.0 | `DeviceRespBean.localKey` may already be present in list/detail/local list responses. |
+| IP address | `DeviceRespBean.ip` | Returned by device list/detail/local direct-device APIs when known. |
+| BLE address | BLE scan beans: `BLEScanDevBean.address` or `ScanDeviceBean.address` | Bound cloud device records usually expose `mac` and `uuid`, not a dedicated `bleAddress` field. Use `mac` first, then `uuid`, unless a local BLE scan result is available. |
+
+Local-key API:
+
+| Purpose | API name | Version | Main `postData` fields | Return model |
+| --- | --- | --- | --- | --- |
+| Get local keys | `thing.m.device.key.get` | `1.0` | `gwId`, optional `nodeIds` JSON string | `ArrayList<LocalKeyBean>` with `devId`, `localKey` |
+
+Call patterns:
+
+```json
+// Direct/Wi-Fi device
+{
+  "gwId": "<devId>"
+}
+```
+
+```json
+// Hub child/subdevice
+{
+  "gwId": "<hubDevId>",
+  "nodeIds": "[\"<childNodeId>\"]"
+}
+```
+
+For subdevices, use `deviceTopo.parentDevId` as `gwId` and
+`deviceTopo.nodeId` in `nodeIds`. If the device is mesh-style and has no
+`parentDevId`, use the resolved mesh/hub id from `deviceTopo.meshId`.
+
 ## Login
 
 Evidence files:

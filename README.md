@@ -7,6 +7,14 @@ Current document:
 
 - [Tuya Smart Android API findings](docs/tuya-smart-android-api-findings.md)
 
+The findings document now includes the required mobile API map for:
+
+- email/password login
+- home listing
+- device listing with hub/subdevice topology
+- local key, IP, and BLE identifier extraction
+- request signing and encrypted response decryption notes
+
 ## Capture Replay Tool
 
 The `tools/replay_tuya_capture_request.py` helper can replay a signed Tuya
