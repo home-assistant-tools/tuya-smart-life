@@ -176,7 +176,7 @@ class TuyaSmartLifeLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
-        return TuyaSmartLifeLocalOptionsFlow(config_entry)
+        return TuyaSmartLifeLocalOptionsFlow()
 
 
 def _error_key_from_mobile_error(err: TuyaMobileApiError) -> str:
@@ -194,8 +194,7 @@ def _error_key_from_mobile_error(err: TuyaMobileApiError) -> str:
 
 
 class TuyaSmartLifeLocalOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+    def __init__(self) -> None:
         self._homes: list[TuyaHome] = []
 
     async def async_step_init(
