@@ -231,7 +231,11 @@ class TuyaIrClimateEntity(
         climate = self.current_climate
         if not climate:
             raise RuntimeError(f"IR climate {self.climate.unique_id} is no longer available")
-        action = _find_climate_action(climate.actions, desired, primary)
+        action = _schema_climate_action(climate, desired) or _find_climate_action(
+            climate.actions,
+            desired,
+            primary,
+        )
         if not action:
             raise RuntimeError(
                 f"No Tuya IR action matched {primary}={desired.get(primary)} "
@@ -315,6 +319,120 @@ def _find_climate_action(
             best_score = score
             best_action = action
     return best_action if best_score > 0 else None
+
+
+def _schema_climate_action(
+    climate: TuyaIrClimate,
+    desired: dict[str, Any],
+) -> TuyaIrAction | None:
+    schema = _climate_schema(climate.actions)
+    if not schema:
+        return None
+    fields = schema.get("fields")
+    if not isinstance(fields, dict):
+        return None
+
+    dps: dict[str, Any] = {}
+    control_dp = schema.get("control_dp")
+    if control_dp and schema.get("control_value") is not None:
+        dps[str(control_dp)] = schema["control_value"]
+
+    power = desired.get("power")
+    if power is False:
+        _schema_put(dps, fields, "power", False)
+    else:
+        _schema_put(dps, fields, "power", True if power is None else power)
+        _schema_put(dps, fields, "mode", desired.get("mode"))
+        _schema_put(dps, fields, "temp", desired.get("temp"))
+        _schema_put(dps, fields, "fan", desired.get("fan"))
+
+    if not dps:
+        return None
+    return TuyaIrAction(
+        remote_id=climate.remote_id,
+        remote_name=climate.remote_name,
+        home_id=climate.home_id,
+        home_name=climate.home_name,
+        hub_dev_id=climate.hub_dev_id,
+        action_id="climate_command",
+        action_name="Climate Command",
+        action_dps=dps,
+        report_dps={
+            key: value
+            for key, value in dps.items()
+            if key != str(control_dp)
+        },
+        product_id=climate.product_id,
+        category=climate.category,
+        raw={"schema": schema},
+    )
+
+
+def _climate_schema(actions: list[TuyaIrAction]) -> dict[str, Any] | None:
+    for action in actions:
+        schema = action.raw.get("schema") if isinstance(action.raw, dict) else None
+        if isinstance(schema, dict) and schema.get("kind") == "climate":
+            return schema
+    return None
+
+
+def _schema_put(
+    dps: dict[str, Any],
+    fields: dict[str, Any],
+    field: str,
+    desired: Any,
+) -> None:
+    if desired in (None, ""):
+        return
+    spec = fields.get(field)
+    if not isinstance(spec, dict):
+        return
+    dp = spec.get("dp")
+    if not dp:
+        return
+    dps[str(dp)] = _schema_value(field, desired, spec)
+
+
+def _schema_value(field: str, desired: Any, spec: dict[str, Any]) -> Any:
+    values = spec.get("values")
+    pairs = values if isinstance(values, list) else []
+    if field == "power":
+        for pair in pairs:
+            if isinstance(pair, dict) and pair.get("value") is desired:
+                return pair["value"]
+        return bool(desired)
+    if field == "mode" and isinstance(desired, HVACMode):
+        desired_values = HVAC_MODE_VALUES.get(desired, set())
+        desired_labels = HVAC_MODE_LABELS.get(desired, ())
+        found = _matching_schema_value(pairs, desired_values, desired_labels)
+        return found if found is not None else next(iter(desired_values), str(desired))
+    if field == "fan" and isinstance(desired, str):
+        desired_values = FAN_MODE_VALUES.get(desired, set())
+        desired_labels = FAN_MODE_LABELS.get(desired, ())
+        found = _matching_schema_value(pairs, desired_values, desired_labels)
+        return found if found is not None else desired
+    if field == "temp":
+        number = float(desired)
+        return int(number) if number.is_integer() else number
+    return desired
+
+
+def _matching_schema_value(
+    pairs: list[Any],
+    desired_values: set[str],
+    desired_labels: tuple[str, ...],
+) -> Any:
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        value = pair.get("value")
+        label = pair.get("label")
+        if _normalize_value(value) in desired_values:
+            return value
+        label_text = _normalize_value(label)
+        if any(alias == label_text for alias in desired_labels):
+            return value
+    return None
 
 
 def _score_action(action: TuyaIrAction, desired: dict[str, Any], primary: str) -> int:

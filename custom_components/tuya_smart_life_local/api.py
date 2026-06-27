@@ -580,7 +580,7 @@ class TuyaSmartLifeMobileApi:
                 ext,
             )
             if force_ir and functions and not remote_actions:
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "Tuya IR/RF remote %s (%s) via hub %s returned %s functions but "
                     "no actionable DPS payloads. Function summary: %s",
                     remote_name,
@@ -693,7 +693,232 @@ def _ir_actions_from_functions(
                         },
                     )
                 )
+    if actions:
+        return actions
+    return _schema_actions_from_functions(
+        home,
+        remote_id,
+        remote_name,
+        hub_dev_id,
+        remote,
+        functions,
+        category,
+        product_id,
+        ext,
+    )
+
+
+def _schema_actions_from_functions(
+    home: TuyaHome,
+    remote_id: str,
+    remote_name: str,
+    hub_dev_id: str,
+    remote: TuyaDeviceDescription | None,
+    functions: list[dict[str, Any]],
+    category: str | None = None,
+    product_id: str | None = None,
+    ext: dict[str, Any] | None = None,
+) -> list[TuyaIrAction]:
+    points = _schema_points(functions)
+    if not points:
+        return []
+
+    control_dp, control_value = _control_command(points)
+    fields = _climate_schema_fields(points)
+    if _is_climate_schema(fields):
+        dps = {control_dp: control_value} if control_dp and control_value is not None else {}
+        return [
+            TuyaIrAction(
+                remote_id=remote_id,
+                remote_name=remote_name,
+                home_id=home.id,
+                home_name=home.name,
+                hub_dev_id=hub_dev_id,
+                action_id="climate_schema",
+                action_name="Climate Control",
+                action_dps=dps,
+                product_id=product_id or (remote.product_id if remote else None),
+                category=category,
+                raw={
+                    "schema": {
+                        "kind": "climate",
+                        "control_dp": control_dp,
+                        "control_value": control_value,
+                        "fields": fields,
+                    },
+                    "functions": functions,
+                    "remote": remote.raw if remote else {},
+                    "ext": ext or {},
+                },
+            )
+        ]
+
+    actions: list[TuyaIrAction] = []
+    for function, point in points:
+        if not _is_scene_schema_point(function, point):
+            continue
+        dp_id = str(point.get("dpId") or point.get("id") or "")
+        if not dp_id:
+            continue
+        pairs = _value_range_pairs(point.get("valueRangeJson"))
+        if not pairs:
+            default_value = point.get("defaultValue")
+            pairs = [(default_value, default_value)] if default_value is not None else []
+        for value, label in pairs:
+            if value is None:
+                continue
+            name = str(
+                point.get("dpName")
+                or function.get("functionName")
+                or label
+                or f"Scene {dp_id}"
+            )
+            suffix = _slug(f"{dp_id}_{label or value}")
+            actions.append(
+                TuyaIrAction(
+                    remote_id=remote_id,
+                    remote_name=remote_name,
+                    home_id=home.id,
+                    home_name=home.name,
+                    hub_dev_id=hub_dev_id,
+                    action_id=f"scene_{suffix}",
+                    action_name=name,
+                    action_dps={dp_id: value},
+                    report_dps={dp_id: value},
+                    product_id=product_id or (remote.product_id if remote else None),
+                    category=category,
+                    raw={
+                        "schema": {"kind": "scene", "dp": dp_id, "value": value},
+                        "function": function,
+                        "detail": point,
+                        "remote": remote.raw if remote else {},
+                        "ext": ext or {},
+                    },
+                )
+            )
     return actions
+
+
+def _schema_points(
+    functions: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    points: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for function in functions:
+        if not isinstance(function, dict):
+            continue
+        data_points = function.get("dataPoints")
+        if isinstance(data_points, list):
+            for point in data_points:
+                if isinstance(point, dict):
+                    points.append((function, point))
+        else:
+            points.append((function, function))
+    return points
+
+
+def _control_command(
+    points: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> tuple[str | None, Any]:
+    for _, point in points:
+        code = _normalized_text(point.get("dpCode") or point.get("dpName"))
+        if code != "control":
+            continue
+        for value, label in _value_range_pairs(point.get("valueRangeJson")):
+            text = _normalized_text(label or value)
+            if text == "sendir":
+                return str(point.get("dpId") or point.get("id")), value
+    return None, None
+
+
+def _climate_schema_fields(
+    points: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    fields: dict[str, dict[str, Any]] = {}
+    for _, point in points:
+        dp_id = point.get("dpId") or point.get("id")
+        if dp_id is None:
+            continue
+        field = _schema_field(point)
+        if not field:
+            continue
+        fields[field] = {
+            "dp": str(dp_id),
+            "code": point.get("dpCode"),
+            "name": point.get("dpName") or point.get("name"),
+            "values": [
+                {"value": value, "label": label}
+                for value, label in _value_range_pairs(point.get("valueRangeJson"))
+            ],
+            "default": point.get("defaultValue"),
+        }
+    return fields
+
+
+def _schema_field(point: dict[str, Any]) -> str | None:
+    parts = {
+        _normalized_text(value)
+        for value in (point.get("dpCode"), point.get("dpName"), point.get("name"))
+        if value is not None
+    }
+    if parts.intersection({"switchpower", "switch", "power", "onoff"}):
+        return "power"
+    if parts.intersection({"mode", "workmode"}):
+        return "mode"
+    if parts.intersection({"temperature", "temp", "targettemp", "targettemperature"}):
+        return "temp"
+    if parts.intersection({"fan", "wind", "fanspeed", "windspeed"}):
+        return "fan"
+    if parts.intersection({"swing", "swingmode"}):
+        return "swing"
+    return None
+
+
+def _is_climate_schema(fields: dict[str, dict[str, Any]]) -> bool:
+    required = {"power", "mode", "temp", "fan"}
+    return required.issubset(fields)
+
+
+def _is_scene_schema_point(function: dict[str, Any], point: dict[str, Any]) -> bool:
+    text = _normalized_text(
+        " ".join(
+            str(value)
+            for value in (
+                function.get("functionName"),
+                point.get("dpCode"),
+                point.get("dpName"),
+            )
+            if value is not None
+        )
+    )
+    if "scene" not in text:
+        return False
+    return any(
+        _normalized_text(label or value) == "scene"
+        for value, label in _value_range_pairs(point.get("valueRangeJson"))
+    )
+
+
+def _value_range_pairs(value: Any) -> list[tuple[Any, Any]]:
+    parsed = _json_value(value)
+    pairs: list[tuple[Any, Any]] = []
+    if isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, (list, tuple)) and item:
+                pairs.append((item[0], item[1] if len(item) > 1 else item[0]))
+            elif isinstance(item, dict):
+                raw_value = item.get("value") or item.get("key") or item.get("code")
+                label = item.get("label") or item.get("name") or item.get("display")
+                pairs.append((raw_value, label or raw_value))
+            else:
+                pairs.append((item, item))
+    elif isinstance(parsed, dict):
+        for key, label in parsed.items():
+            pairs.append((key, label))
+    return pairs
+
+
+def _normalized_text(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
 
 def _action_details(function: dict[str, Any]) -> list[dict[str, Any]]:

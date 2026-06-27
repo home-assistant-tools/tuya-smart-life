@@ -351,7 +351,11 @@ class TuyaLocalRuntime:
 
     def ir_action_buttons(self) -> list[TuyaIrAction]:
         return sorted(
-            self.ir_actions.values(),
+            (
+                action
+                for action in self.ir_actions.values()
+                if _ir_action_schema_kind(action) != "climate"
+            ),
             key=lambda action: (action.home_name, action.remote_name, action.action_name),
         )
 
@@ -715,6 +719,14 @@ def _is_key_or_version_error(response: Any) -> bool:
         for key in ("Error", "Err", "error", "message", "Payload")
     ).lower()
     return "key or version" in text
+
+
+def _ir_action_schema_kind(action: TuyaIrAction) -> str | None:
+    schema = action.raw.get("schema") if isinstance(action.raw, dict) else None
+    if isinstance(schema, dict):
+        kind = schema.get("kind")
+        return str(kind) if kind else None
+    return None
 
 
 def _is_ir_climate_remote(actions: list[TuyaIrAction]) -> bool:
