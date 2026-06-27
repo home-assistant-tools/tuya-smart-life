@@ -36,10 +36,10 @@ local keys for the selected homes, then controls supported devices locally.
 
 ### Login and home selection
 
-The config flow asks for the Tuya account email/password, country code, mobile
-app id/client id, and the recovered native signing material. You can either
-provide the full native signing key text, or provide the app secret,
-certificate SHA-256, and BMP `secret2` key so the integration can derive it.
+The config flow asks only for the Tuya account email/username and password. The
+mobile app signing profile recovered from Smart Life 7.8.6 is bundled in the
+integration, so users do not need to provide app id, app secret, certificate
+fingerprint, BMP `secret2`, SDK version, or native signing key material.
 
 After login succeeds, Home Assistant shows a multi-select list of Tuya homes.
 Choose one or more homes to sync. The selection can be changed later from the

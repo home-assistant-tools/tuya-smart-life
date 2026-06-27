@@ -24,9 +24,11 @@ from .const import (
     CONF_PACKAGE_NAME,
     CONF_SDK_VERSION,
     CONF_SELECTED_HOME_IDS,
+    DEFAULT_APP_ID,
     DEFAULT_APP_VERSION,
     DEFAULT_COUNTRY_CODE,
     DEFAULT_DEVICE_CORE_VERSION,
+    DEFAULT_NATIVE_KEY_TEXT,
     DEFAULT_OS_SYSTEM,
     DEFAULT_PACKAGE_NAME,
     DEFAULT_SDK_VERSION,
@@ -42,11 +44,11 @@ def mobile_config_from_data(data: dict[str, Any]) -> TuyaMobileConfig:
         email=data[CONF_EMAIL],
         password=data[CONF_PASSWORD],
         country_code=data.get(CONF_COUNTRY_CODE, DEFAULT_COUNTRY_CODE),
-        app_id=data[CONF_APP_ID],
+        app_id=data.get(CONF_APP_ID, DEFAULT_APP_ID),
         app_secret=data.get(CONF_APP_SECRET) or None,
         cert_sha256=data.get(CONF_CERT_SHA256) or None,
         bmp_key=data.get(CONF_BMP_KEY) or None,
-        native_key_text=data.get(CONF_NATIVE_KEY_TEXT) or None,
+        native_key_text=data.get(CONF_NATIVE_KEY_TEXT) or DEFAULT_NATIVE_KEY_TEXT,
         package_name=data.get(CONF_PACKAGE_NAME, DEFAULT_PACKAGE_NAME),
         app_version=data.get(CONF_APP_VERSION, DEFAULT_APP_VERSION),
         sdk_version=data.get(CONF_SDK_VERSION, DEFAULT_SDK_VERSION),
@@ -54,16 +56,6 @@ def mobile_config_from_data(data: dict[str, Any]) -> TuyaMobileConfig:
             CONF_DEVICE_CORE_VERSION, DEFAULT_DEVICE_CORE_VERSION
         ),
         os_system=data.get(CONF_OS_SYSTEM, DEFAULT_OS_SYSTEM),
-    )
-
-
-def _has_app_material(data: dict[str, Any]) -> bool:
-    if data.get(CONF_NATIVE_KEY_TEXT):
-        return True
-    return bool(
-        data.get(CONF_APP_SECRET)
-        and data.get(CONF_CERT_SHA256)
-        and data.get(CONF_BMP_KEY)
     )
 
 
@@ -75,51 +67,6 @@ def user_schema(user_input: dict[str, Any] | None = None) -> vol.Schema:
             vol.Required(CONF_PASSWORD): selector.TextSelector(
                 selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
             ),
-            vol.Optional(
-                CONF_COUNTRY_CODE,
-                default=values.get(CONF_COUNTRY_CODE, DEFAULT_COUNTRY_CODE),
-            ): str,
-            vol.Required(CONF_APP_ID, default=values.get(CONF_APP_ID, "")): str,
-            vol.Optional(
-                CONF_NATIVE_KEY_TEXT, default=values.get(CONF_NATIVE_KEY_TEXT, "")
-            ): selector.TextSelector(
-                selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-            ),
-            vol.Optional(
-                CONF_APP_SECRET, default=values.get(CONF_APP_SECRET, "")
-            ): selector.TextSelector(
-                selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-            ),
-            vol.Optional(
-                CONF_CERT_SHA256, default=values.get(CONF_CERT_SHA256, "")
-            ): str,
-            vol.Optional(CONF_BMP_KEY, default=values.get(CONF_BMP_KEY, "")): (
-                selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-                )
-            ),
-            vol.Optional(
-                CONF_PACKAGE_NAME,
-                default=values.get(CONF_PACKAGE_NAME, DEFAULT_PACKAGE_NAME),
-            ): str,
-            vol.Optional(
-                CONF_APP_VERSION,
-                default=values.get(CONF_APP_VERSION, DEFAULT_APP_VERSION),
-            ): str,
-            vol.Optional(
-                CONF_SDK_VERSION,
-                default=values.get(CONF_SDK_VERSION, DEFAULT_SDK_VERSION),
-            ): str,
-            vol.Optional(
-                CONF_DEVICE_CORE_VERSION,
-                default=values.get(
-                    CONF_DEVICE_CORE_VERSION, DEFAULT_DEVICE_CORE_VERSION
-                ),
-            ): str,
-            vol.Optional(
-                CONF_OS_SYSTEM,
-                default=values.get(CONF_OS_SYSTEM, DEFAULT_OS_SYSTEM),
-            ): str,
         }
     )
 
@@ -160,33 +107,30 @@ class TuyaSmartLifeLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            if not _has_app_material(user_input):
-                errors["base"] = "missing_app_material"
-            else:
-                try:
-                    config = mobile_config_from_data(user_input)
-                    api = TuyaSmartLifeMobileApi(config)
-                    session, homes = await self.hass.async_add_executor_job(
-                        self._login_and_list_homes, api
-                    )
-                    await self.async_set_unique_id(
-                        f"{user_input[CONF_EMAIL].lower()}:{user_input[CONF_APP_ID]}"
-                    )
-                    self._abort_if_unique_id_configured()
-                    self._user_data = dict(user_input)
-                    self._homes = homes
-                    _LOGGER.debug(
-                        "Authenticated Tuya mobile account uid=%s homes=%s",
-                        session.uid,
-                        len(homes),
-                    )
-                    return await self.async_step_select_homes()
-                except TuyaMobileApiError as err:
-                    _LOGGER.warning("Tuya mobile login failed: %s", err)
-                    errors["base"] = "cannot_connect"
-                except Exception:
-                    _LOGGER.exception("Unexpected Tuya mobile login error")
-                    errors["base"] = "unknown"
+            try:
+                config = mobile_config_from_data(user_input)
+                api = TuyaSmartLifeMobileApi(config)
+                session, homes = await self.hass.async_add_executor_job(
+                    self._login_and_list_homes, api
+                )
+                await self.async_set_unique_id(
+                    f"{user_input[CONF_EMAIL].lower()}:{config.app_id}"
+                )
+                self._abort_if_unique_id_configured()
+                self._user_data = dict(user_input)
+                self._homes = homes
+                _LOGGER.debug(
+                    "Authenticated Tuya mobile account uid=%s homes=%s",
+                    session.uid,
+                    len(homes),
+                )
+                return await self.async_step_select_homes()
+            except TuyaMobileApiError as err:
+                _LOGGER.warning("Tuya mobile login failed: %s", err)
+                errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected Tuya mobile login error")
+                errors["base"] = "unknown"
 
         return self.async_show_form(
             step_id="user",

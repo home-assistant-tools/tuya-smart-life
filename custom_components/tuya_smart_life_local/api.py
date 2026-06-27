@@ -10,6 +10,7 @@ import urllib.request
 import uuid
 from typing import Any
 
+from .const import DEFAULT_APP_RN_VERSION, DEFAULT_CH_KEY
 from .models import (
     TuyaDeviceDescription,
     TuyaHome,
@@ -195,7 +196,7 @@ class TuyaSmartLifeMobileApi:
             "clientId": self.config.app_id,
             "deviceId": self.device_id,
             "appVersion": self.config.app_version,
-            "chKey": "3f7060ea",
+            "chKey": DEFAULT_CH_KEY,
             "ttid": "international",
             "lang": "vi_VN",
             "os": "Android",
@@ -207,7 +208,7 @@ class TuyaSmartLifeMobileApi:
             "osSystem": self.config.os_system,
             "platform": "y",
             "channel": "oem",
-            "appRnVersion": "5.84",
+            "appRnVersion": DEFAULT_APP_RN_VERSION,
             "bizData": "",
             "cp": "",
             "nd": "",
