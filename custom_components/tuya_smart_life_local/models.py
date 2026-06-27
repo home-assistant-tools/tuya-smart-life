@@ -75,6 +75,42 @@ class TuyaDeviceDescription:
         return bool(self.local_key)
 
 
+@dataclass(slots=True)
+class TuyaIrAction:
+    remote_id: str
+    remote_name: str
+    home_id: str
+    home_name: str
+    hub_dev_id: str
+    action_id: str
+    action_name: str
+    action_dps: dict[str, Any]
+    report_dps: dict[str, Any] = field(default_factory=dict)
+    product_id: str | None = None
+    category: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self.remote_id}_ir_{self.action_id}"
+
+
+@dataclass(slots=True)
+class TuyaIrClimate:
+    remote_id: str
+    remote_name: str
+    home_id: str
+    home_name: str
+    hub_dev_id: str
+    actions: list[TuyaIrAction]
+    product_id: str | None = None
+    category: str | None = None
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self.remote_id}_ir_climate"
+
+
 def home_id_from_raw(raw: dict[str, Any]) -> str:
     return str(raw.get("homeId") or raw.get("gid") or raw.get("id"))
 

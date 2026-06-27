@@ -12,7 +12,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from .models import TuyaDeviceDescription
+from .models import TuyaDeviceDescription, TuyaIrAction, TuyaIrClimate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +51,27 @@ NON_BUTTON_NAME_PARTS = (
     "led",
     "relay status",
 )
+IR_CLIMATE_CATEGORY_MARKERS = (
+    "ac",
+    "air",
+    "aircondition",
+    "air_condition",
+    "climate",
+    "conditioner",
+    "hvac",
+    "kt",
+)
+IR_CLIMATE_ACTION_MARKERS = (
+    "cool",
+    "dry",
+    "fan",
+    "heat",
+    "mode",
+    "power",
+    "temp",
+    "temperature",
+    "wind",
+)
 
 
 class _DiscoveryProtocol(asyncio.DatagramProtocol):
@@ -70,6 +91,7 @@ class TuyaLocalRuntime:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self.devices: dict[str, TuyaDeviceDescription] = {}
+        self.ir_actions: dict[str, TuyaIrAction] = {}
         self.transports: list[asyncio.DatagramTransport] = []
         self._tinytuya_devices: dict[str, Any] = {}
         self._lock = asyncio.Lock()
@@ -212,6 +234,9 @@ class TuyaLocalRuntime:
         self.devices = next_devices
         self._tinytuya_devices.clear()
 
+    def update_ir_actions(self, actions: list[TuyaIrAction]) -> None:
+        self.ir_actions = {action.unique_id: action for action in actions}
+
     def _handle_datagram(self, data: bytes, addr: tuple[str, int]) -> None:
         try:
             import tinytuya
@@ -324,6 +349,39 @@ class TuyaLocalRuntime:
             for device, dp_id, value, _ in self.switch_button_dps()
         ]
 
+    def ir_action_buttons(self) -> list[TuyaIrAction]:
+        return sorted(
+            self.ir_actions.values(),
+            key=lambda action: (action.home_name, action.remote_name, action.action_name),
+        )
+
+    def ir_climates(self) -> list[TuyaIrClimate]:
+        grouped: dict[str, list[TuyaIrAction]] = {}
+        for action in self.ir_actions.values():
+            grouped.setdefault(action.remote_id, []).append(action)
+
+        climates: list[TuyaIrClimate] = []
+        for remote_id, actions in grouped.items():
+            if not _is_ir_climate_remote(actions):
+                continue
+            first = actions[0]
+            climates.append(
+                TuyaIrClimate(
+                    remote_id=remote_id,
+                    remote_name=first.remote_name,
+                    home_id=first.home_id,
+                    home_name=first.home_name,
+                    hub_dev_id=first.hub_dev_id,
+                    actions=sorted(actions, key=lambda action: action.action_name),
+                    product_id=first.product_id,
+                    category=first.category,
+                )
+            )
+        return sorted(
+            climates,
+            key=lambda climate: (climate.home_name, climate.remote_name),
+        )
+
     async def async_status(self, device: TuyaDeviceDescription) -> dict[str, Any]:
         return await self.hass.async_add_executor_job(self._status, device.dev_id)
 
@@ -339,6 +397,13 @@ class TuyaLocalRuntime:
                 device.dev_id,
                 int(dp_id),
                 value,
+            )
+
+    async def async_publish_ir_action(self, action: TuyaIrAction) -> Any:
+        async with self._lock:
+            return await self.hass.async_add_executor_job(
+                self._publish_ir_action,
+                action.unique_id,
             )
 
     def _status(self, dev_id: str) -> dict[str, Any]:
@@ -372,6 +437,39 @@ class TuyaLocalRuntime:
         if hasattr(device, "set_value"):
             return device.set_value(dp_id, value)
         return device.set_status(value, switch=dp_id)
+
+    def _publish_ir_action(self, unique_id: str) -> Any:
+        action = self.ir_actions.get(unique_id)
+        if not action:
+            raise RuntimeError(f"IR action {unique_id} is no longer available")
+        hub = self.devices.get(action.hub_dev_id)
+        if not hub:
+            raise RuntimeError(f"IR hub {action.hub_dev_id} is no longer available")
+        response = self._publish_ir_dps_once(hub.dev_id, action.action_dps)
+        if _is_key_or_version_error(response):
+            self._tinytuya_devices.pop(hub.dev_id, None)
+            response = self._publish_ir_dps_once(hub.dev_id, action.action_dps)
+        return response
+
+    def _publish_ir_dps_once(self, hub_dev_id: str, dps: dict[str, Any]) -> Any:
+        device = self._tinytuya_device(hub_dev_id)
+        if not device:
+            raise RuntimeError(f"IR hub {hub_dev_id} is missing local metadata or IP")
+
+        normalized_dps = _normalize_command_dps(dps)
+        if hasattr(device, "set_multiple_values"):
+            return device.set_multiple_values(normalized_dps)
+        if hasattr(device, "set_status_multiple"):
+            return device.set_status_multiple(normalized_dps)
+
+        response: Any = None
+        for dp_id, value in normalized_dps.items():
+            switch = int(dp_id) if str(dp_id).isdecimal() else dp_id
+            if hasattr(device, "set_value"):
+                response = device.set_value(switch, value)
+            else:
+                response = device.set_status(value, switch=switch)
+        return response
 
     def _try_child_protocol_fallback(
         self,
@@ -617,6 +715,41 @@ def _is_key_or_version_error(response: Any) -> bool:
         for key in ("Error", "Err", "error", "message", "Payload")
     ).lower()
     return "key or version" in text
+
+
+def _is_ir_climate_remote(actions: list[TuyaIrAction]) -> bool:
+    if not actions:
+        return False
+    category = " ".join(action.category or "" for action in actions).lower()
+    if any(marker in category for marker in IR_CLIMATE_CATEGORY_MARKERS):
+        return True
+
+    remote_name = actions[0].remote_name.lower()
+    if "air " in remote_name or remote_name.startswith("air"):
+        return True
+
+    text = " ".join(
+        " ".join(
+            [
+                " ".join(action.action_dps),
+                " ".join(action.report_dps),
+                action.action_name,
+                json.dumps(action.raw, ensure_ascii=False, default=str),
+            ]
+        )
+        for action in actions
+    ).lower()
+    if not any(marker in text for marker in ("temp", "temperature")):
+        return False
+    return any(marker in text for marker in IR_CLIMATE_ACTION_MARKERS)
+
+
+def _normalize_command_dps(dps: dict[str, Any]) -> dict[Any, Any]:
+    normalized: dict[Any, Any] = {}
+    for dp_id, value in dps.items():
+        key: Any = int(dp_id) if str(dp_id).isdecimal() else str(dp_id)
+        normalized[key] = value
+    return normalized
 
 
 def _is_fan_device(device: TuyaDeviceDescription) -> bool:

@@ -45,6 +45,8 @@ Confirmed plaintext `et=0` calls used by the integration:
 | Device relation/order | `m.life.my.group.device.relation.list` | `3.2` | `gid` |
 | Energy/compact device list | `m.energy.home.device.list` | `3.0` | `groupId`, optional `type` |
 | Local/direct device list | `m.life.app.smart.local.device.list` | `1.1` | `homeId`, `groupType=homeGroup` |
+| Scene/action device list | `thing.m.linkage.dev.list` | `3.0`/`4.0` | `gid`, `sourceType=action` |
+| Scene/action function list | `thing.m.linkage.function.list` | `3.0` | `params.gid`, `params.devId` |
 
 Some post-login batch/plugin APIs still require SDK encryption with `et=3`.
 
@@ -71,6 +73,46 @@ Live checks against the current account showed:
 The integration exposes boolean DPS values that look like switch buttons/gangs
 and avoids known auxiliary fields such as indicator/backlight/countdown when
 they can be recognized.
+
+## IR Remote Control Findings
+
+Tuya IR devices use a real IR hub plus virtual remote devices. The mobile app
+does not control the virtual remote through normal local child-device DPS.
+Instead, the scene/action layer builds an IR action and publishes raw DPS to the
+hub.
+
+Relevant Android evidence:
+
+- `ActionConstantKt.ACTION_TYPE_IRISSUEVII` is `irIssueVii`.
+- `ExecuteSceneExtensionsKt` executes `irIssueVii` by taking
+  `SceneAction.executorProperty` as `actionDps` and `SceneAction.extraProperty`
+  as `reportDps`.
+- `DeviceUtil.infraredPublishDps(infraGwId, subDeviceId, actionDps, reportDps)`
+  calls `newDeviceInstance(infraGwId).infraredPublishDps(...)`.
+- `AbsThingDevice.infraredPublishDps(subDevId, actionDps, reportDps)` parses
+  `actionDps` JSON and sends it as local control DPS to the hub device. The
+  `reportDps` payload is only used for app-side manual state reporting after
+  successful publish.
+
+The integration therefore follows this path:
+
+```text
+mobile action API -> actionDps/reportDps -> Home Assistant -> IR hub IP/local key -> Tuya local protocol
+```
+
+Discovery APIs used:
+
+- `thing.m.linkage.dev.list` v3.0/v4.0 with `{"gid": home_id, "sourceType": "action"}`
+  returns candidate action/remote ids, names and extension metadata.
+- `thing.m.linkage.function.list` v3.0 with
+  `{"params": {"gid": home_id, "devId": remote_id}}` returns action functions
+  and data points.
+
+For generic remotes, each valid action DPS becomes a Home Assistant button. For
+AC/climate remotes, the integration tries to classify the remote from category,
+name and function metadata, then maps matching `power`, `mode`, `temp`, and
+`wind` actions to a climate entity. IR climate state is optimistic because the
+physical air conditioner does not report state back through IR.
 
 ## Capture Replay Tool
 
@@ -106,13 +148,16 @@ python3 tools/tuya_mobile_login.py
 python3 tools/tuya_mobile_login.py --username 0912345678
 python3 tools/tuya_mobile_login.py --action homes
 python3 tools/tuya_mobile_login.py --action devices --home-id <home-id>
+python3 tools/tuya_mobile_login.py --action ir --home-id <home-id>
 python3 tools/tuya_mobile_login.py --action devices --json
 ```
 
 The script redacts session secrets by default. Device output includes
 hub/child classification, parent id, local key presence, IP, MAC, UUID, product
-id, and online state. Use `--show-secrets` only when you intentionally need raw
-`sid`, `ecode`, tokens, or local keys.
+id, and online state. IR output includes remote id, inferred category, hub id,
+action functions and parsed `actionDps` payloads. Use `--show-secrets` only when
+you intentionally need raw `sid`, `ecode`, tokens, local keys or full raw API
+payloads.
 
 ## Mobile Crypto Helpers
 

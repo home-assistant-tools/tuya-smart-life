@@ -32,6 +32,11 @@ DEVICE_GROUP_API = ("m.life.my.group.device.group.list", "4.3")
 DEVICE_RELATION_API = ("m.life.my.group.device.relation.list", "3.2")
 LOCAL_DEVICE_API = ("m.life.app.smart.local.device.list", "1.1")
 ENERGY_DEVICE_API = ("m.energy.home.device.list", "3.0")
+ACTION_DEVICE_APIS = (
+    ("thing.m.linkage.dev.list", "3.0"),
+    ("thing.m.linkage.dev.list", "4.0"),
+)
+ACTION_FUNCTION_API = ("thing.m.linkage.function.list", "3.0")
 
 FIXED_RSA_SEED = bytes(
     [
@@ -346,6 +351,52 @@ class TuyaMobileClient:
             }
         return result
 
+    def list_action_devices(self, sid, home_id):
+        result = {}
+        for api, version in ACTION_DEVICE_APIS:
+            status, response = self.request(
+                api,
+                version,
+                {"gid": home_id, "sourceType": "action"},
+                sid=sid,
+            )
+            result[f"{api}@{version}"] = {
+                "http_status": status,
+                "success": response.get("success"),
+                "errorCode": response.get("errorCode"),
+                "errorMsg": response.get("errorMsg"),
+                "result": response.get("result"),
+            }
+            if response.get("success"):
+                break
+        return result
+
+    def list_action_functions(self, sid, home_id, dev_id):
+        payloads = (
+            {"params": {"gid": home_id, "devId": dev_id}},
+            {"params": {"gid": str(home_id), "devId": dev_id}},
+            {"devId": dev_id},
+        )
+        result = []
+        for payload in payloads:
+            status, response = self.request(
+                *ACTION_FUNCTION_API,
+                payload,
+                sid=sid,
+            )
+            item = {
+                "payload": payload,
+                "http_status": status,
+                "success": response.get("success"),
+                "errorCode": response.get("errorCode"),
+                "errorMsg": response.get("errorMsg"),
+                "result": response.get("result"),
+            }
+            result.append(item)
+            if response.get("success"):
+                break
+        return result
+
 
 def result_count(value):
     if isinstance(value, list):
@@ -433,6 +484,206 @@ def summarize_home_devices(home, device_response, show_secrets=False):
         "devices": devices,
         "raw": device_response if show_secrets else redact(device_response),
     }
+
+
+def summarize_home_ir(client, sid, home, show_secrets=False):
+    home_id = home_id_from_home(home)
+    action_device_response = client.list_action_devices(sid, home_id)
+    action_result = first_success_result(action_device_response)
+    action_result = action_result if isinstance(action_result, dict) else {}
+    device_ids = action_result.get("deviceIds")
+    exts = action_result.get("exts")
+    device_ids = device_ids if isinstance(device_ids, dict) else {}
+    exts = exts if isinstance(exts, dict) else {}
+    remote_ids = sorted({str(key) for key in device_ids} | {str(key) for key in exts})
+
+    remotes = []
+    for remote_id in remote_ids:
+        ext = exts.get(remote_id)
+        ext = ext if isinstance(ext, dict) else {}
+        functions_response = client.list_action_functions(sid, home_id, remote_id)
+        function_result = first_success_result(functions_response)
+        functions = function_result if isinstance(function_result, list) else []
+        remote_name = str(device_ids.get(remote_id) or ext.get("name") or remote_id)
+        remotes.append(
+            {
+                "remoteId": remote_id,
+                "remoteName": remote_name,
+                "hubId": infer_hub_id(ext),
+                "category": first_text(
+                    ext,
+                    (
+                        "category",
+                        "categoryId",
+                        "category_id",
+                        "remoteType",
+                        "remote_type",
+                        "productCategory",
+                    ),
+                ),
+                "kind": classify_ir_remote(remote_name, ext, functions),
+                "functionCall": redact(functions_response, show_secrets=show_secrets),
+                "functions": [
+                    summarize_ir_function(function, show_secrets=show_secrets)
+                    for function in functions
+                    if isinstance(function, dict)
+                ],
+            }
+        )
+
+    return {
+        "homeId": home_id,
+        "homeName": home.get("name"),
+        "actionDeviceCall": redact(action_device_response, show_secrets=show_secrets),
+        "remoteCount": len(remotes),
+        "remotes": remotes,
+    }
+
+
+def first_success_result(response):
+    if isinstance(response, dict):
+        iterable = response.values()
+    else:
+        iterable = response if isinstance(response, list) else []
+    for item in iterable:
+        if isinstance(item, dict) and item.get("success"):
+            return item.get("result")
+    return None
+
+
+def summarize_ir_function(function, show_secrets=False):
+    data_points = function.get("dataPoints")
+    data_points = data_points if isinstance(data_points, list) else []
+    return {
+        "id": function.get("id"),
+        "functionCode": function.get("functionCode"),
+        "functionName": function.get("functionName"),
+        "functionType": function.get("functionType"),
+        "status": function.get("status"),
+        "dataPointCount": len(data_points),
+        "payloads": [
+            redact(payload, show_secrets=show_secrets)
+            for payload in extract_ir_payloads(function)
+        ],
+        "raw": redact(function, show_secrets=show_secrets) if show_secrets else None,
+    }
+
+
+def extract_ir_payloads(value):
+    payloads = []
+
+    def walk(item, path):
+        item = parse_json_value(item)
+        if isinstance(item, dict):
+            action = (
+                item.get("actionDps")
+                or item.get("executorProperty")
+                or item.get("executor_property")
+                or item.get("dps")
+            )
+            report = (
+                item.get("reportDps")
+                or item.get("extraProperty")
+                or item.get("extra_property")
+                or item.get("report")
+            )
+            if action:
+                payloads.append(
+                    {
+                        "path": path,
+                        "actionDps": parse_json_value(action),
+                        "reportDps": parse_json_value(report),
+                        "label": first_text(
+                            item,
+                            (
+                                "label",
+                                "name",
+                                "display",
+                                "actionDisplay",
+                                "actionDisplayNew",
+                                "dpName",
+                            ),
+                        ),
+                    }
+                )
+            for key, child in item.items():
+                walk(child, f"{path}.{key}" if path else str(key))
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                walk(child, f"{path}[{index}]")
+
+    walk(value, "")
+    return payloads[:50]
+
+
+def parse_json_value(value):
+    if isinstance(value, str):
+        text = value.strip()
+        if text and text[0] in "[{":
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return value
+    return value
+
+
+def infer_hub_id(ext):
+    for key in (
+        "gwId",
+        "gatewayId",
+        "infraGwId",
+        "infraredGwId",
+        "infraredGatewayId",
+        "parentDevId",
+        "communicationId",
+        "communicationNode",
+        "meshId",
+    ):
+        value = nested_value(ext, key)
+        if value:
+            return str(value)
+    return None
+
+
+def classify_ir_remote(remote_name, ext, functions):
+    text = " ".join(
+        (
+            remote_name,
+            json.dumps(ext, ensure_ascii=False, default=str),
+            json.dumps(functions, ensure_ascii=False, default=str),
+        )
+    ).lower()
+    if any(marker in text for marker in ("air", "climate", "conditioner", "hvac", "kt")):
+        return "climate"
+    if any(marker in text for marker in ("tv", "television")):
+        return "tv"
+    if any(marker in text for marker in ("fan", "quat")):
+        return "fan"
+    return "generic"
+
+
+def first_text(value, keys):
+    for key in keys:
+        found = nested_value(value, key)
+        if found is not None and str(found).strip():
+            return str(found).strip()
+    return None
+
+
+def nested_value(value, key):
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = nested_value(child, key)
+            if found:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = nested_value(child, key)
+            if found:
+                return found
+    return None
 
 
 def native_key_from_args(args):
@@ -555,7 +806,7 @@ def parse_args():
     )
     parser.add_argument(
         "--action",
-        choices=("login", "homes", "devices", "all"),
+        choices=("login", "homes", "devices", "ir", "all"),
         default=env_value("TUYA_ACTION") or "login",
         help="What to call after signing in",
     )
@@ -679,6 +930,41 @@ def main():
         for home in homes
         if not selected_home_ids or str(home_id_from_home(home)) in selected_home_ids
     ]
+    if args.action == "ir":
+        ir_summaries = [
+            summarize_home_ir(client, sid, home, show_secrets=args.show_secrets)
+            for home in selected_homes
+        ]
+        output = {
+            "homes_count": len(homes),
+            "selected_homes_count": len(selected_homes),
+            "homes": ir_summaries,
+        }
+        if args.json:
+            print(json.dumps(output, ensure_ascii=False, indent=2))
+        else:
+            print(
+                f"homes_count={len(homes)} selected_homes_count={len(selected_homes)}"
+            )
+            for summary in ir_summaries:
+                print(f"home name={summary['homeName']} homeId={summary['homeId']}")
+                print(f"ir_remotes={summary['remoteCount']}")
+                for remote in summary["remotes"]:
+                    print(
+                        f"ir kind={remote['kind']} name={remote['remoteName']} "
+                        f"remoteId={remote['remoteId']} hub={remote['hubId']} "
+                        f"category={remote['category']}"
+                    )
+                    for function in remote["functions"]:
+                        print(
+                            f"  function name={function['functionName']} "
+                            f"code={function['functionCode']} "
+                            f"payloads={len(function['payloads'])}"
+                        )
+                        for payload in function["payloads"][:5]:
+                            print(f"    actionDps={payload.get('actionDps')}")
+        return 0
+
     device_summaries = []
     for home in selected_homes:
         home_id = home_id_from_home(home)

@@ -796,6 +796,12 @@ Standalone home and device calls after login:
 - `m.life.app.smart.local.device.list` v1.1 accepts plaintext `et=0` with
   `{"homeId": <homeId>, "groupType": "homeGroup"}` but returned an empty object
   in the latest standalone test.
+- `thing.m.linkage.dev.list` v3.0/v4.0 accepts plaintext `et=0` after login with
+  `{"gid": <homeId>, "sourceType": "action"}` and returns action-capable device
+  or remote ids plus extension metadata when available.
+- `thing.m.linkage.function.list` v3.0 accepts plaintext `et=0` after login with
+  `{"params": {"gid": <homeId>, "devId": <remoteId>}}` and returns action
+  functions/data points used by the scene editor.
 
 Hub/child topology in the direct device list:
 
@@ -829,6 +835,22 @@ Switch button/gang DPS:
   `Quạt bếp` device (`productId=tqfl5ws2csdtdaak`) reports DP `1` as fan power,
   DP `3` as speed, and DP `9` as a light. The integration maps DP `1`/`3` to a
   `fan` entity and keeps DP `9` as a separate switch.
+
+IR remote devices:
+
+- The app action executor for newer IR commands is `irIssueVii`.
+- `ExecuteSceneExtensionsKt` sends `SceneAction.executorProperty` as
+  `actionDps` and `SceneAction.extraProperty` as `reportDps`.
+- `AbsThingDevice.infraredPublishDps(subDevId, actionDps, reportDps)` parses
+  `actionDps` and publishes those DPS locally to the IR hub device.
+- `reportDps` is used for manual report/state update after a successful publish;
+  it is not required to emit the IR code locally.
+- The integration uses scene/action API metadata to expose generic IR actions as
+  button entities and AC-like remotes as optimistic climate entities when
+  `power`/`mode`/`temp`/`wind` action metadata is present.
+- `tools/tuya_mobile_login.py --action ir --home-id <homeId>` probes the mobile
+  action APIs and prints remote id, inferred kind, hub id, function summary and
+  parsed `actionDps` payloads.
 
 Open item:
 

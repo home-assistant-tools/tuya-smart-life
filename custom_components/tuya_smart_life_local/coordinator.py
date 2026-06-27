@@ -11,7 +11,13 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import TuyaMobileApiError, TuyaSmartLifeMobileApi
 from .const import CONF_SELECTED_HOME_IDS, DEFAULT_SCAN_INTERVAL_SECONDS, DOMAIN
 from .local import TuyaLocalRuntime
-from .models import TuyaDeviceDescription, TuyaHome, TuyaMobileConfig, TuyaSession
+from .models import (
+    TuyaDeviceDescription,
+    TuyaHome,
+    TuyaIrAction,
+    TuyaMobileConfig,
+    TuyaSession,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,6 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 class TuyaSmartLifeData:
     homes: list[TuyaHome]
     devices: list[TuyaDeviceDescription]
+    ir_actions: list[TuyaIrAction]
     session: TuyaSession
 
 
@@ -46,7 +53,7 @@ class TuyaSmartLifeCoordinator(DataUpdateCoordinator[TuyaSmartLifeData]):
     async def _async_update_data(self) -> TuyaSmartLifeData:
         try:
             api = TuyaSmartLifeMobileApi(self.config)
-            homes, devices, session = await self.hass.async_add_executor_job(
+            homes, devices, ir_actions, session = await self.hass.async_add_executor_job(
                 api.fetch_devices,
                 self.selected_home_ids,
             )
@@ -56,8 +63,14 @@ class TuyaSmartLifeCoordinator(DataUpdateCoordinator[TuyaSmartLifeData]):
             raise UpdateFailed(f"Unexpected Tuya update failure: {err}") from err
 
         self.runtime.update_devices(devices)
+        self.runtime.update_ir_actions(ir_actions)
         await self.runtime.async_scan_once()
-        return TuyaSmartLifeData(homes=homes, devices=devices, session=session)
+        return TuyaSmartLifeData(
+            homes=homes,
+            devices=devices,
+            ir_actions=ir_actions,
+            session=session,
+        )
 
 
 def selected_home_ids_from_entry(entry: ConfigEntry) -> set[str]:
