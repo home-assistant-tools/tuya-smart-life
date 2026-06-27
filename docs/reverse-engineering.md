@@ -94,12 +94,14 @@ Relevant Android evidence:
 - `AbsThingDevice.infraredPublishDps(subDevId, actionDps, reportDps)` parses
   `actionDps` JSON and sends it as local control DPS through the hub. The
   `subDevId` identifies the virtual IR remote, and `reportDps` is only used for
-  app-side manual state reporting after successful publish.
+  app-side manual state reporting after successful publish. The action frame is
+  sent to the real hub and does not include the virtual remote as a local
+  `cid`/child target.
 
 The integration therefore follows this path:
 
 ```text
-mobile action API -> actionDps/reportDps -> Home Assistant -> IR hub IP/local key + remote_id/cid -> Tuya local protocol
+mobile action API -> actionDps/reportDps -> Home Assistant -> IR hub IP/local key -> Tuya local protocol
 ```
 
 Discovery APIs used:

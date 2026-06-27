@@ -137,8 +137,9 @@ Integration gọi `thing.m.linkage.dev.list` và
 khi tạo automation. Integration cũng thử đọc scene rule qua
 `thing.m.linkage.rule.query`/`thing.m.linkage.rule.detail.find` để nhập các
 payload IR mà app lưu trong scene. Nếu action có raw DPS hợp lệ, HA sẽ tạo
-button tương ứng và publish DPS đó xuống hub local với `remote_id` của thiết bị
-ảo.
+button tương ứng và publish raw DPS đó trực tiếp xuống IR hub local. `remote_id`
+của thiết bị ảo chỉ dùng để đặt tên/entity/report metadata, không được đóng gói
+như `cid` trong frame local gửi xuống hub.
 
 Nếu remote được nhận diện là điều hoà/AC và action đủ thông tin `power`, `mode`,
 `temp` hoặc `wind`, integration sẽ tạo thêm climate entity. Climate IR là điều

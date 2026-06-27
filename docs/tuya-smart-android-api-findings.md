@@ -843,6 +843,8 @@ IR remote devices:
   `actionDps` and `SceneAction.extraProperty` as `reportDps`.
 - `AbsThingDevice.infraredPublishDps(subDevId, actionDps, reportDps)` parses
   `actionDps` and publishes those DPS locally to the IR hub device.
+- `subDevId` identifies the virtual remote for callback/reporting; the local
+  action publish itself is sent to the real hub, not to a child `cid`.
 - `reportDps` is used for manual report/state update after a successful publish;
   it is not required to emit the IR code locally.
 - The integration uses scene/action API metadata to expose generic IR actions as
