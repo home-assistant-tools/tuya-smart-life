@@ -127,7 +127,7 @@ class TuyaSmartLifeLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return await self.async_step_select_homes()
             except TuyaMobileApiError as err:
                 _LOGGER.warning("Tuya mobile login failed: %s", err)
-                errors["base"] = "cannot_connect"
+                errors["base"] = _error_key_from_mobile_error(err)
             except Exception:
                 _LOGGER.exception("Unexpected Tuya mobile login error")
                 errors["base"] = "unknown"
@@ -177,6 +177,15 @@ class TuyaSmartLifeLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         return TuyaSmartLifeLocalOptionsFlow(config_entry)
+
+
+def _error_key_from_mobile_error(err: TuyaMobileApiError) -> str:
+    message = str(err)
+    if "ILLEGAL_CLIENT_ID" in message:
+        return "invalid_client"
+    if "USER_PASSWD_WRONG" in message or "PASSWORD" in message:
+        return "invalid_auth"
+    return "cannot_connect"
 
 
 class TuyaSmartLifeLocalOptionsFlow(config_entries.OptionsFlow):

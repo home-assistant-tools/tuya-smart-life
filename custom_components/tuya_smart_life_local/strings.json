@@ -19,6 +19,8 @@
     },
     "error": {
       "cannot_connect": "Could not login or fetch homes from Tuya.",
+      "invalid_auth": "Email/username or password is incorrect.",
+      "invalid_client": "The bundled Tuya mobile client profile was rejected by Tuya.",
       "no_home_selected": "Select at least one home.",
       "unknown": "Unexpected error."
     },
