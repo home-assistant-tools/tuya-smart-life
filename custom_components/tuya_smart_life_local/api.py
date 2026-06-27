@@ -42,6 +42,11 @@ ENERGY_DEVICE_API = ("m.energy.home.device.list", "3.0")
 ACTION_DEVICE_API = ("thing.m.linkage.dev.list", "3.0")
 ACTION_DEVICE_API_V4 = ("thing.m.linkage.dev.list", "4.0")
 ACTION_FUNCTION_API = ("thing.m.linkage.function.list", "3.0")
+SCENE_RULE_APIS = (
+    ("thing.m.linkage.rule.query", "5.0"),
+    ("thing.m.linkage.rule.simple.query", "4.0"),
+)
+SCENE_RULE_DETAIL_API = ("thing.m.linkage.rule.detail.find", "2.0")
 
 NO_POST_DATA = object()
 LOGIN_OPTIONS = '{"group": 1,"mfaCode": ""}'
@@ -506,6 +511,76 @@ class TuyaSmartLifeMobileApi:
         )
         return []
 
+    def list_scene_rules(
+        self,
+        session: TuyaSession,
+        home: TuyaHome,
+    ) -> list[dict[str, Any]]:
+        last_response: dict[str, Any] | None = None
+        for api, version in SCENE_RULE_APIS:
+            for payload in (NO_POST_DATA, {}, {"gid": home.id}):
+                _, response = self.request(
+                    api,
+                    version,
+                    payload,
+                    sid=session.sid,
+                    extra={"gid": home.id},
+                )
+                if response.get("success"):
+                    result = response.get("result")
+                    if not isinstance(result, list):
+                        return []
+                    return [item for item in result if isinstance(item, dict)]
+                last_response = response
+                _LOGGER.debug(
+                    "Tuya scene rule list %s v%s for %s payload=%s failed: %s",
+                    api,
+                    version,
+                    home.id,
+                    "<none>" if payload is NO_POST_DATA else payload,
+                    response,
+                )
+        self._raise_for_response(
+            last_response or {},
+            f"scene rule list for {home.name}",
+        )
+        return []
+
+    def get_scene_rule_detail(
+        self,
+        session: TuyaSession,
+        home: TuyaHome,
+        rule_id: str,
+    ) -> dict[str, Any] | None:
+        payloads = ({"ruleId": rule_id}, {"id": rule_id})
+        last_response: dict[str, Any] | None = None
+        for payload in payloads:
+            _, response = self.request(
+                *SCENE_RULE_DETAIL_API,
+                payload,
+                sid=session.sid,
+                extra={"gid": home.id},
+            )
+            if response.get("success"):
+                result = response.get("result")
+                return result if isinstance(result, dict) else None
+            last_response = response
+            _LOGGER.debug(
+                "Tuya scene rule detail for %s in %s payload=%s failed: %s",
+                rule_id,
+                home.id,
+                payload,
+                response,
+            )
+        if last_response:
+            _LOGGER.debug(
+                "Unable to fetch Tuya scene rule detail for %s in %s: %s",
+                rule_id,
+                home.id,
+                last_response,
+            )
+        return None
+
     def list_home_ir_actions(
         self,
         session: TuyaSession,
@@ -516,7 +591,7 @@ class TuyaSmartLifeMobileApi:
             action_devices = self.list_action_device_ids(session, home)
         except TuyaMobileApiError as err:
             _LOGGER.warning("Unable to fetch Tuya IR action devices for %s: %s", home.id, err)
-            return []
+            action_devices = {}
 
         device_names = action_devices.get("deviceIds")
         exts = action_devices.get("exts")
@@ -594,6 +669,51 @@ class TuyaSmartLifeMobileApi:
                     ),
                 )
             actions.extend(remote_actions)
+        actions.extend(
+            self.list_home_scene_ir_actions(
+                session,
+                home,
+                devices,
+                action_devices,
+            )
+        )
+        return _dedupe_ir_actions(actions)
+
+    def list_home_scene_ir_actions(
+        self,
+        session: TuyaSession,
+        home: TuyaHome,
+        devices: list[TuyaDeviceDescription],
+        action_devices: dict[str, Any],
+    ) -> list[TuyaIrAction]:
+        try:
+            rules = self.list_scene_rules(session, home)
+        except TuyaMobileApiError as err:
+            _LOGGER.debug("Unable to fetch Tuya scene rules for %s: %s", home.id, err)
+            return []
+
+        detailed_rules: list[dict[str, Any]] = []
+        for rule in rules:
+            rule_id = _scene_rule_id(rule)
+            if rule_id and not _contains_ir_scene_action(rule):
+                detail = self.get_scene_rule_detail(session, home, rule_id)
+                if detail:
+                    detailed_rules.append(detail)
+                    continue
+            detailed_rules.append(rule)
+
+        actions = _ir_actions_from_scene_rules(
+            home,
+            detailed_rules,
+            devices,
+            action_devices,
+        )
+        if detailed_rules and not actions:
+            _LOGGER.debug(
+                "Tuya scene rules for %s returned %s rules but no IR action payloads",
+                home.id,
+                len(detailed_rules),
+            )
         return actions
 
     def fetch_devices(
@@ -706,6 +826,242 @@ def _ir_actions_from_functions(
         product_id,
         ext,
     )
+
+
+def _ir_actions_from_scene_rules(
+    home: TuyaHome,
+    rules: list[dict[str, Any]],
+    devices: list[TuyaDeviceDescription],
+    action_devices: dict[str, Any],
+) -> list[TuyaIrAction]:
+    device_names = action_devices.get("deviceIds")
+    exts = action_devices.get("exts")
+    if not isinstance(device_names, dict):
+        device_names = {}
+    if not isinstance(exts, dict):
+        exts = {}
+
+    devices_by_id = {device.dev_id: device for device in devices}
+    hub_ids = {device.dev_id for device in devices if device.is_hub}
+    actions: list[TuyaIrAction] = []
+    seen: set[tuple[str, str]] = set()
+
+    for rule in rules:
+        rule_id = _scene_rule_id(rule) or _slug(_scene_rule_name(rule) or "scene")
+        for index, scene_action in enumerate(_iter_ir_scene_action_items(rule)):
+            direct = _extract_action_maps(scene_action)
+            if not direct:
+                continue
+            action_dps, report_dps, label = direct
+            if not _looks_like_dps_map(action_dps):
+                continue
+
+            remote_id = _scene_action_remote_id(scene_action)
+            if not remote_id:
+                continue
+            remote = devices_by_id.get(remote_id)
+            ext = exts.get(remote_id)
+            ext = ext if isinstance(ext, dict) else {}
+            hub_dev_id = _infer_ir_hub_id(remote, ext, hub_ids)
+            if not hub_dev_id:
+                continue
+
+            key = (remote_id, json.dumps(action_dps, sort_keys=True, default=str))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            remote_name = str(
+                (remote.name if remote else None)
+                or device_names.get(remote_id)
+                or ext.get("name")
+                or scene_action.get("entityName")
+                or remote_id
+            )
+            action_name = _scene_action_label(scene_action, rule, label)
+            action_id = _slug(
+                "_".join(
+                    str(part)
+                    for part in (
+                        "scene",
+                        rule_id,
+                        scene_action.get("id")
+                        or scene_action.get("orderNum")
+                        or scene_action.get("order")
+                        or index,
+                        action_name,
+                    )
+                    if part not in (None, "")
+                )
+            )
+            product_id = (
+                (remote.product_id if remote else None)
+                or _first_text(ext, ("productId", "product_id", "pid"))
+            )
+            actions.append(
+                TuyaIrAction(
+                    remote_id=remote_id,
+                    remote_name=remote_name,
+                    home_id=home.id,
+                    home_name=home.name,
+                    hub_dev_id=hub_dev_id,
+                    action_id=action_id,
+                    action_name=action_name,
+                    action_dps={str(key): value for key, value in action_dps.items()},
+                    report_dps={str(key): value for key, value in report_dps.items()},
+                    product_id=product_id,
+                    category=_remote_category(remote, ext, []),
+                    raw={
+                        "source": "scene_rule",
+                        "rule": rule,
+                        "action": scene_action,
+                        "remote": remote.raw if remote else {},
+                        "ext": ext,
+                    },
+                )
+            )
+    return actions
+
+
+def _dedupe_ir_actions(actions: list[TuyaIrAction]) -> list[TuyaIrAction]:
+    result: list[TuyaIrAction] = []
+    seen: set[tuple[str, str, str]] = set()
+    for action in actions:
+        key = (
+            action.unique_id,
+            action.hub_dev_id,
+            json.dumps(action.action_dps, sort_keys=True, default=str),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(action)
+    return result
+
+
+def _contains_ir_scene_action(value: Any) -> bool:
+    return any(
+        _extract_action_maps(action)
+        for action in _iter_ir_scene_action_items(value)
+    )
+
+
+def _iter_ir_scene_action_items(value: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    pending: list[Any] = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, list):
+            pending.extend(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        if _looks_like_ir_scene_action(item):
+            items.append(item)
+        for child in item.values():
+            if isinstance(child, (dict, list)):
+                pending.append(child)
+    return items
+
+
+def _looks_like_ir_scene_action(value: dict[str, Any]) -> bool:
+    executor = str(
+        value.get("actionExecutor")
+        or value.get("actionExcutor")
+        or value.get("executor")
+        or value.get("functionType")
+        or ""
+    )
+    if executor in IR_ACTION_EXECUTORS:
+        return True
+    if not any(
+        key in value
+        for key in (
+            "executorProperty",
+            "extraProperty",
+            "actionDps",
+            "reportDps",
+        )
+    ):
+        return False
+    return _extract_action_maps(value) is not None
+
+
+def _scene_rule_id(rule: dict[str, Any]) -> str | None:
+    return _first_text(rule, ("id", "ruleId", "rule_id", "sceneId", "scene_id"))
+
+
+def _scene_rule_name(rule: dict[str, Any]) -> str | None:
+    return _first_text(rule, ("name", "ruleName", "sceneName", "title"))
+
+
+def _scene_action_remote_id(action: dict[str, Any]) -> str | None:
+    return _first_text(
+        action,
+        (
+            "entityId",
+            "devId",
+            "deviceId",
+            "subDevId",
+            "subDeviceId",
+            "remoteId",
+            "infraredId",
+        ),
+    )
+
+
+def _scene_action_label(
+    action: dict[str, Any],
+    rule: dict[str, Any],
+    fallback: str,
+) -> str:
+    for key in (
+        "actionDisplayNew",
+        "actionDisplay",
+        "display",
+        "name",
+        "functionName",
+    ):
+        label = _display_text(action.get(key))
+        if label:
+            return label
+    for key in ("executorProperty", "actionDps", "extraProperty", "reportDps"):
+        label = _display_text(action.get(key))
+        if label:
+            return label
+    return fallback or _scene_rule_name(rule) or "IR Action"
+
+
+def _display_text(value: Any) -> str:
+    value = _json_value(value)
+    parts = [
+        part
+        for part in _flatten_display_parts(value)
+        if part and not part.isdecimal() and part not in ("{}", "[]")
+    ]
+    unique = list(dict.fromkeys(parts))
+    return " ".join(unique[:6]).strip()
+
+
+def _flatten_display_parts(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, child in value.items():
+            if str(key) not in {"executorProperty", "extraProperty"}:
+                parts.extend(_flatten_display_parts(key))
+            parts.extend(_flatten_display_parts(child))
+        return parts
+    if isinstance(value, list):
+        parts: list[str] = []
+        for child in value:
+            parts.extend(_flatten_display_parts(child))
+        return parts
+    if _is_scalar(value):
+        text = str(value).strip()
+        return [text] if text else []
+    return []
 
 
 def _schema_actions_from_functions(

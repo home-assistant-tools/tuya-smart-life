@@ -451,20 +451,39 @@ class TuyaLocalRuntime:
         hub = self.devices.get(action.hub_dev_id)
         if not hub:
             raise RuntimeError(f"IR hub {action.hub_dev_id} is no longer available")
-        response = self._publish_ir_dps_once(hub.dev_id, action.action_dps)
+        response = self._publish_ir_dps_once(action)
         if _is_key_or_version_error(response):
             self._tinytuya_devices.pop(hub.dev_id, None)
-            response = self._publish_ir_dps_once(hub.dev_id, action.action_dps)
+            self._tinytuya_devices.pop(_ir_remote_cache_key(action), None)
+            response = self._publish_ir_dps_once(action)
+        if _is_tuya_error(response):
+            fallback_response = self._publish_ir_dps_once(action, hub_direct=True)
+            if not _is_tuya_error(fallback_response):
+                return fallback_response
         return response
 
-    def _publish_ir_dps_once(self, hub_dev_id: str, dps: dict[str, Any]) -> Any:
-        device = self._tinytuya_device(hub_dev_id)
+    def _publish_ir_dps_once(
+        self,
+        action: TuyaIrAction,
+        hub_direct: bool = False,
+    ) -> Any:
+        device = (
+            self._tinytuya_device(action.hub_dev_id)
+            if hub_direct
+            else self._tinytuya_ir_remote_device(action)
+        )
         if not device:
-            raise RuntimeError(f"IR hub {hub_dev_id} is missing local metadata or IP")
+            raise RuntimeError(
+                f"IR hub {action.hub_dev_id} is missing local metadata or IP"
+            )
 
-        normalized_dps = _normalize_command_dps(dps)
+        normalized_dps = _normalize_command_dps(action.action_dps)
         if hasattr(device, "set_multiple_values"):
-            return device.set_multiple_values(normalized_dps)
+            return _call_tinytuya_writer(
+                device.set_multiple_values,
+                normalized_dps,
+                nowait=not hub_direct,
+            )
         if hasattr(device, "set_status_multiple"):
             return device.set_status_multiple(normalized_dps)
 
@@ -472,10 +491,71 @@ class TuyaLocalRuntime:
         for dp_id, value in normalized_dps.items():
             switch = int(dp_id) if str(dp_id).isdecimal() else dp_id
             if hasattr(device, "set_value"):
-                response = device.set_value(switch, value)
+                response = _call_tinytuya_writer(
+                    device.set_value,
+                    switch,
+                    value,
+                    nowait=not hub_direct,
+                )
             else:
                 response = device.set_status(value, switch=switch)
         return response
+
+    def _tinytuya_ir_remote_device(self, action: TuyaIrAction) -> Any:
+        cache_key = _ir_remote_cache_key(action)
+        existing = self._tinytuya_devices.get(cache_key)
+        if existing:
+            return existing
+
+        hub = self.devices.get(action.hub_dev_id)
+        if not hub or not hub.ip or not hub.local_key:
+            return None
+        parent = self._tinytuya_device(hub.dev_id)
+        if not parent:
+            return None
+
+        try:
+            import tinytuya
+        except ImportError as err:
+            raise RuntimeError("tinytuya is not installed") from err
+
+        kwargs: dict[str, Any] = {
+            "version": _protocol_version(hub.protocol_version),
+            "parent": parent,
+            "cid": action.remote_id,
+            "node_id": action.remote_id,
+        }
+        try:
+            tuya_device = tinytuya.OutletDevice(
+                action.remote_id,
+                hub.ip,
+                hub.local_key,
+                **kwargs,
+            )
+        except TypeError:
+            kwargs.pop("node_id", None)
+            try:
+                tuya_device = tinytuya.OutletDevice(
+                    action.remote_id,
+                    hub.ip,
+                    hub.local_key,
+                    **kwargs,
+                )
+            except TypeError:
+                kwargs.pop("cid", None)
+                tuya_device = tinytuya.OutletDevice(
+                    action.remote_id,
+                    hub.ip,
+                    hub.local_key,
+                    **kwargs,
+                )
+
+        if hasattr(tuya_device, "set_socketPersistent"):
+            tuya_device.set_socketPersistent(False)
+        if hasattr(tuya_device, "set_socketNODELAY"):
+            tuya_device.set_socketNODELAY(True)
+        self._tinytuya_devices[cache_key] = tuya_device
+        return tuya_device
 
     def _try_child_protocol_fallback(
         self,
@@ -721,6 +801,23 @@ def _is_key_or_version_error(response: Any) -> bool:
         for key in ("Error", "Err", "error", "message", "Payload")
     ).lower()
     return "key or version" in text
+
+
+def _is_tuya_error(response: Any) -> bool:
+    if not isinstance(response, dict):
+        return False
+    return any(key in response for key in ("Error", "Err", "error"))
+
+
+def _call_tinytuya_writer(method: Any, *args: Any, nowait: bool) -> Any:
+    try:
+        return method(*args, nowait=nowait)
+    except TypeError:
+        return method(*args)
+
+
+def _ir_remote_cache_key(action: TuyaIrAction) -> str:
+    return f"ir:{action.hub_dev_id}:{action.remote_id}"
 
 
 def _ir_action_schema_kind(action: TuyaIrAction) -> str | None:

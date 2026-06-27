@@ -134,8 +134,11 @@ Tuya quản lý thiết bị IR theo hai lớp:
 
 Integration gọi `thing.m.linkage.dev.list` và
 `thing.m.linkage.function.list` để lấy danh sách remote/action mà app Tuya dùng
-khi tạo automation. Nếu action có raw DPS hợp lệ, HA sẽ tạo button tương ứng và
-publish DPS đó xuống hub local.
+khi tạo automation. Integration cũng thử đọc scene rule qua
+`thing.m.linkage.rule.query`/`thing.m.linkage.rule.detail.find` để nhập các
+payload IR mà app lưu trong scene. Nếu action có raw DPS hợp lệ, HA sẽ tạo
+button tương ứng và publish DPS đó xuống hub local với `remote_id` của thiết bị
+ảo.
 
 Nếu remote được nhận diện là điều hoà/AC và action đủ thông tin `power`, `mode`,
 `temp` hoặc `wind`, integration sẽ tạo thêm climate entity. Climate IR là điều
@@ -189,8 +192,9 @@ HACS sẽ thấy các phiên bản GitHub release của repository này. Để c
 - Chạy `tools/tuya_mobile_login.py --action ir --home-id <home-id>` để xem
   mobile API có trả remote/action không.
 - Nếu Tuya chỉ trả phím raw rời, integration sẽ tạo button thay vì climate.
-- Nếu API không trả `actionDps`/`executorProperty`, chưa thể bấm local bằng
-  dữ liệu hiện có.
+- Nếu API và scene đều không trả `actionDps`/`executorProperty`, chưa thể bấm
+  local bằng dữ liệu hiện có. Khi đó có thể cần tạo scene trong app Tuya cho
+  nút IR cần dùng để app lưu payload tương ứng.
 
 ### Chọn nhầm nhà ở LAN khác
 

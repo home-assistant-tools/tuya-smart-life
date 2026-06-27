@@ -47,6 +47,8 @@ Confirmed plaintext `et=0` calls used by the integration:
 | Local/direct device list | `m.life.app.smart.local.device.list` | `1.1` | `homeId`, `groupType=homeGroup` |
 | Scene/action device list | `thing.m.linkage.dev.list` | `3.0`/`4.0` | `gid`, `sourceType=action` |
 | Scene/action function list | `thing.m.linkage.function.list` | `3.0` | `params.gid`, `params.devId` |
+| Scene rule list | `thing.m.linkage.rule.query` / `thing.m.linkage.rule.simple.query` | `5.0` / `4.0` | top-level `gid` |
+| Scene rule detail | `thing.m.linkage.rule.detail.find` | `2.0` | top-level `gid`, `ruleId` |
 
 Some post-login batch/plugin APIs still require SDK encryption with `et=3`.
 
@@ -90,14 +92,14 @@ Relevant Android evidence:
 - `DeviceUtil.infraredPublishDps(infraGwId, subDeviceId, actionDps, reportDps)`
   calls `newDeviceInstance(infraGwId).infraredPublishDps(...)`.
 - `AbsThingDevice.infraredPublishDps(subDevId, actionDps, reportDps)` parses
-  `actionDps` JSON and sends it as local control DPS to the hub device. The
-  `reportDps` payload is only used for app-side manual state reporting after
-  successful publish.
+  `actionDps` JSON and sends it as local control DPS through the hub. The
+  `subDevId` identifies the virtual IR remote, and `reportDps` is only used for
+  app-side manual state reporting after successful publish.
 
 The integration therefore follows this path:
 
 ```text
-mobile action API -> actionDps/reportDps -> Home Assistant -> IR hub IP/local key -> Tuya local protocol
+mobile action API -> actionDps/reportDps -> Home Assistant -> IR hub IP/local key + remote_id/cid -> Tuya local protocol
 ```
 
 Discovery APIs used:
@@ -107,6 +109,11 @@ Discovery APIs used:
 - `thing.m.linkage.function.list` v3.0 with
   `{"params": {"gid": home_id, "devId": remote_id}}` returns action functions
   and data points.
+- `thing.m.linkage.rule.query` v5.0,
+  `thing.m.linkage.rule.simple.query` v4.0, and
+  `thing.m.linkage.rule.detail.find` v2.0 can expose saved `SceneAction`
+  objects. IR scene actions use `actionExecutor=irIssueVii`,
+  `executorProperty` as `actionDps`, and `extraProperty` as `reportDps`.
 
 For generic remotes, each valid action DPS becomes a Home Assistant button. For
 AC/climate remotes, the integration tries to classify the remote from category,
