@@ -15,6 +15,51 @@ The findings document now includes the required mobile API map for:
 - local key, IP, and BLE identifier extraction
 - request signing and encrypted response decryption notes
 
+## HACS Custom Integration
+
+This repository includes a Home Assistant custom integration at
+`custom_components/tuya_smart_life_local`. It logs in with the Smart Life /
+Tuya Smart mobile API, lets you select one or more homes, fetches devices and
+local keys for the selected homes, then controls supported devices locally.
+
+### HACS installation
+
+1. In HACS, open **Integrations**.
+2. Click **... -> Custom repositories**.
+3. Add this repository URL and select category **Integration**:
+   ```bash
+   https://github.com/home-assistant-tools/tuya-smart-life
+   ```
+4. Install **Tuya Smart Life Local** and restart Home Assistant.
+5. Go to **Settings -> Devices & services -> Add integration** and search for
+   **Tuya Smart Life Local**.
+
+### Login and home selection
+
+The config flow asks for the Tuya account email/password, country code, mobile
+app id/client id, and the recovered native signing material. You can either
+provide the full native signing key text, or provide the app secret,
+certificate SHA-256, and BMP `secret2` key so the integration can derive it.
+
+After login succeeds, Home Assistant shows a multi-select list of Tuya homes.
+Choose one or more homes to sync. The selection can be changed later from the
+integration options.
+
+### Local control behavior
+
+- Device metadata, local keys, hub/child relationships, DPS values, MAC
+  addresses, BLE identifiers when Tuya exposes them, and cloud-provided IP
+  fields are fetched through the mobile API.
+- LAN control uses TinyTuya and Tuya protocol 3.3/3.4/3.5. Child devices are
+  addressed through the parent hub with the child's `node_id` / `cid` when
+  topology metadata is available.
+- The integration listens for Tuya UDP broadcasts on ports `6666`, `6667`,
+  `6699`, and `7000`, and also runs a periodic TinyTuya LAN scan. Broadcast and
+  scan results update the IP cache so local commands use the current LAN IP.
+- The first HACS version exposes boolean DPS values as Home Assistant switch
+  entities. The runtime keeps the richer metadata needed to add lights, covers,
+  sensors, locks, and fans later.
+
 ## Capture Replay Tool
 
 The `tools/replay_tuya_capture_request.py` helper can replay a signed Tuya
