@@ -407,7 +407,7 @@ class TuyaLocalRuntime:
         async with self._lock:
             return await self.hass.async_add_executor_job(
                 self._publish_ir_action,
-                action.unique_id,
+                action,
             )
 
     def _status(self, dev_id: str) -> dict[str, Any]:
@@ -442,10 +442,12 @@ class TuyaLocalRuntime:
             return device.set_value(dp_id, value)
         return device.set_status(value, switch=dp_id)
 
-    def _publish_ir_action(self, unique_id: str) -> Any:
-        action = self.ir_actions.get(unique_id)
-        if not action:
-            raise RuntimeError(f"IR action {unique_id} is no longer available")
+    def _publish_ir_action(self, action: TuyaIrAction | str) -> Any:
+        if isinstance(action, str):
+            found = self.ir_actions.get(action)
+            if not found:
+                raise RuntimeError(f"IR action {action} is no longer available")
+            action = found
         hub = self.devices.get(action.hub_dev_id)
         if not hub:
             raise RuntimeError(f"IR hub {action.hub_dev_id} is no longer available")
