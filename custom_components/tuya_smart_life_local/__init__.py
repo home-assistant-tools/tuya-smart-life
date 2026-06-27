@@ -39,6 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await local_runtime.async_stop()
         raise
 
+    _ensure_hub_registry_entries(hass, entry, local_runtime)
     _remove_stale_registry_entries(hass, entry, local_runtime)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = TuyaSmartLifeRuntime(
@@ -64,6 +65,22 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _ensure_hub_registry_entries(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    local_runtime: TuyaLocalRuntime,
+) -> None:
+    device_registry = dr.async_get(hass)
+    for device in local_runtime.hub_devices():
+        device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, device.dev_id)},
+            manufacturer="Tuya",
+            model=device.product_id,
+            name=device.name.strip() or device.dev_id,
+        )
 
 
 def _remove_stale_registry_entries(
