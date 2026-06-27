@@ -30,6 +30,36 @@ This is a replay/debug tool. It reuses the captured signed envelope, session
 fields, and encrypted `postData`; it does not generate fresh Tuya signatures or
 decrypt encrypted `result` payloads yet.
 
+## Standalone Login Tool
+
+`tools/tuya_mobile_login.py` performs a fresh email/password login using the
+mobile API request signature. Keep credentials and extracted app material in
+environment variables rather than committing them:
+
+```bash
+export TUYA_EMAIL='user@example.com'
+export TUYA_PASSWORD='...'
+export TUYA_APP_ID='<client-id>'
+export TUYA_APP_SECRET='<app-secret>'
+export TUYA_CERT_SHA256='<apk-cert-sha256>'
+export TUYA_BMP='/path/to/t_s.bmp'
+
+python3 tools/tuya_mobile_login.py
+python3 tools/tuya_mobile_login.py --action homes
+python3 tools/tuya_mobile_login.py --action devices --home-id <home-id>
+python3 tools/tuya_mobile_login.py --action devices --json
+```
+
+The script redacts session secrets by default. It uses plaintext `et=0` for the
+login, home-list, and direct device-list calls, while still applying the native
+mobile request signature. Device output includes hub/child classification,
+parent hub id, local key presence, IP, MAC, UUID, and product id. Use
+`--show-secrets` only when you intentionally want to print raw `sid`, `ecode`,
+tokens, and local keys.
+
+Some post-login APIs, especially encrypted batch wrappers, still require the SDK
+`et=3` AES-GCM request/response layer.
+
 ## Mobile Crypto Helpers
 
 `tools/tuya_mobile_crypto.js` implements the Java-side request signing input

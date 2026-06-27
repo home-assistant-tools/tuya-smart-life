@@ -729,6 +729,80 @@ Current practical read API map:
    - `smartlife.m.device.ref.info.list`
    - `smartlife.m.device.sig.mesh.list`
 
+Standalone email/password login implementation:
+
+1. Call `smartlife.m.user.username.token.get` v2.0 with plaintext `et=0`
+   signed `postData`:
+
+```json
+{"countryCode":"84","username":"<email>","isUid":false}
+```
+
+2. The response is plaintext JSON and contains:
+   - `token`
+   - `publicKey`: RSA modulus as a decimal string
+   - `exponent`: RSA public exponent as a decimal string
+3. Compute `md5(password).hexdigest()`.
+4. RSA encrypt that MD5 hex string using PKCS#1 v1.5 padding and the
+   `publicKey`/`exponent` from step 2. The Android helper returns the RSA
+   ciphertext as lowercase hex.
+5. Call `smartlife.m.user.email.password.login` v3.0 with plaintext `et=0`
+   signed `postData`:
+
+```json
+{
+  "countryCode": "84",
+  "email": "<email>",
+  "passwd": "<rsa-ciphertext-hex>",
+  "options": "{\"group\": 1,\"mfaCode\": \"\"}",
+  "token": "<token-from-step-2>",
+  "ifencrypt": 1
+}
+```
+
+`tools/tuya_mobile_login.py` implements this flow and was verified against the
+live mobile API. The script redacts `sid`, `ecode`, token, password, and key
+material in its default output.
+
+Standalone home and device calls after login:
+
+- `m.life.home.space.list` v1.0 also accepts plaintext `et=0` when the signed
+  envelope includes the fresh `sid` from login. It was verified to return two
+  homes for the test account:
+  - `Kiara`, `homeId=92258848`
+  - `Thành Nga Home`, `homeId=69887204`
+- `m.life.my.group.device.list` v2.2 accepts plaintext `et=0` with
+  `{"gid": <homeId>}`. The response contains the primary device records,
+  including `devId`, `name`, `productId`, `uuid`, `mac`, `ip`, `localKey`,
+  `communication`, and `deviceTopo`.
+- `m.energy.home.device.list` v3.0 accepts plaintext `et=0` with
+  `{"groupId": "<homeId>", "type": "energy"}` and returns a compact online
+  device list.
+- `m.life.my.group.device.group.list` v4.3 accepts plaintext `et=0` with
+  `{"gid": <homeId>}` and returned an empty group list for the verified homes.
+- `m.life.my.group.device.relation.list` v3.2 accepts plaintext `et=0` with
+  `{"gid": <homeId>}` and returns relation/order buckets.
+- `m.life.app.smart.local.device.list` v1.1 accepts plaintext `et=0` with
+  `{"homeId": <homeId>, "groupType": "homeGroup"}` but returned an empty object
+  in the latest standalone test.
+
+Hub/child topology in the direct device list:
+
+- A child/subdevice has `deviceTopo.parentDevId`.
+- The hub is the device whose `devId` matches that `parentDevId`.
+- A gateway/hub may also have `meta.zigBleSubEnable=true` or communication mode
+  type `8`.
+- Example verified topology: `Zemismart M6 Hub`
+  (`devId=ebc7e92b567f41ca98j9hh`) is the parent hub for child devices
+  `Nhà tổ` and `Nhà xe cũ`.
+- Child records may have an empty `localKey`; use the parent hub relationship
+  when local control needs the hub context.
+
+`tools/tuya_mobile_login.py --action devices` implements these calls and prints
+device kind (`hub`, `child`, or `device`), parent id, IP, MAC, local key
+presence, and product id. Raw local keys and session secrets are redacted unless
+`--show-secrets` is explicitly supplied.
+
 Open item:
 
 - `postData` and most accepted responses are still encrypted by the mobile SDK.
