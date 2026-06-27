@@ -825,6 +825,10 @@ Switch button/gang DPS:
   label.
 - Auxiliary boolean DPS fields such as indicator/backlight/countdown should not
   be exposed as regular switch buttons when they can be identified.
+- Fan devices can use the same boolean DPS shape for power. The observed
+  `Quạt bếp` device (`productId=tqfl5ws2csdtdaak`) reports DP `1` as fan power,
+  DP `3` as speed, and DP `9` as a light. The integration maps DP `1`/`3` to a
+  `fan` entity and keeps DP `9` as a separate switch.
 
 Open item:
 

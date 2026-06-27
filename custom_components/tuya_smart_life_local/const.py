@@ -3,7 +3,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "tuya_smart_life_local"
-PLATFORMS = [Platform.SWITCH]
+PLATFORMS = [Platform.SWITCH, Platform.FAN, Platform.BINARY_SENSOR]
 
 CONF_APP_ID = "app_id"
 CONF_APP_SECRET = "app_secret"

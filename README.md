@@ -20,6 +20,10 @@ Integration này không cần tạo Tuya IoT Cloud project, không cần nhập 
 - Tạo switch entity cho các nút/gang điều khiển lấy từ `dataPointInfo.dps`.
   Nếu API trả tên trong `dataPointInfo.dpName` thì dùng tên đó; nếu không sẽ
   fallback thành `Button <dp_id>`.
+- Tạo fan entity cho thiết bị quạt đã nhận diện được, ví dụ quạt có DP nguồn
+  và DP tốc độ riêng.
+- Tạo binary sensor chẩn đoán `Online` cho hub để hub vẫn hiện trong danh sách
+  thiết bị của Home Assistant ngay cả khi hub không có nút điều khiển trực tiếp.
 - Tự dọn entity/device cũ khi bạn đổi danh sách nhà được chọn.
 
 ## Yêu cầu
@@ -97,6 +101,11 @@ Integration chỉ expose các DP boolean có khả năng là nút/gang điều k
 DP phụ như indicator, backlight, countdown hoặc trạng thái phụ sẽ bị bỏ qua khi
 có thể nhận diện được. Với các thiết bị chưa trả `dpName`, entity sẽ có tên
 fallback như `Button 1`, `Button 2`.
+
+Một số thiết bị dùng DP boolean `1` làm nguồn cho domain khác, ví dụ quạt. Khi
+thiết bị được nhận diện là quạt, DP nguồn sẽ được expose là `fan` thay vì
+`switch`; các DP phụ như đèn của quạt vẫn có thể được expose là switch riêng nếu
+Tuya trả về DP boolean tương ứng.
 
 ## Cập Nhật
 

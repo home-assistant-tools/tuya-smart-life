@@ -20,6 +20,9 @@ DISCOVERY_PORTS = (6666, 6667, 6699, 7000)
 DISCOVERY_SCAN_SECONDS = 8
 FORCE_SCAN_INTERVAL_SECONDS = 300
 SWITCH_BUTTON_DP_IDS = {str(dp_id) for dp_id in range(1, 9)}
+FAN_PRODUCT_IDS = {"tqfl5ws2csdtdaak"}
+FAN_POWER_DP_ID = "1"
+FAN_SPEED_DP_ID = "3"
 NON_BUTTON_NAME_PARTS = (
     "backlight",
     "child lock",
@@ -247,11 +250,23 @@ class TuyaLocalRuntime:
             if not device.local_controllable or device.is_hub:
                 continue
             for dp_id, value in device.dps.items():
+                if _is_fan_device(device) and str(dp_id) == FAN_POWER_DP_ID:
+                    continue
                 if isinstance(value, bool) and _is_switch_button_dp(device, dp_id):
                     items.append(
                         (device, dp_id, value, _switch_button_label(device, dp_id))
                     )
         return items
+
+    def fan_devices(self) -> list[TuyaDeviceDescription]:
+        return [
+            device
+            for device in self.devices.values()
+            if device.local_controllable and not device.is_hub and _is_fan_device(device)
+        ]
+
+    def hub_devices(self) -> list[TuyaDeviceDescription]:
+        return [device for device in self.devices.values() if device.is_hub]
 
     def boolean_dps(self) -> list[tuple[TuyaDeviceDescription, str, bool]]:
         return [
@@ -266,7 +281,7 @@ class TuyaLocalRuntime:
         self,
         device: TuyaDeviceDescription,
         dp_id: str,
-        value: bool,
+        value: Any,
     ) -> Any:
         async with self._lock:
             return await self.hass.async_add_executor_job(
@@ -285,7 +300,7 @@ class TuyaLocalRuntime:
             return response
         return {}
 
-    def _set_dp(self, dev_id: str, dp_id: int, value: bool) -> Any:
+    def _set_dp(self, dev_id: str, dp_id: int, value: Any) -> Any:
         device = self._tinytuya_device(dev_id)
         if not device:
             raise RuntimeError(f"Device {dev_id} is missing local metadata or IP")
@@ -395,6 +410,18 @@ def _protocol_version(value: str | None) -> float:
     except ValueError:
         _LOGGER.debug("Unknown Tuya protocol version %s, falling back to 3.3", value)
         return 3.3
+
+
+def _is_fan_device(device: TuyaDeviceDescription) -> bool:
+    product_id = (device.product_id or "").strip().lower()
+    if product_id in FAN_PRODUCT_IDS:
+        return True
+    name = device.name.strip().lower()
+    if ("fan" in name or "quạt" in name) and isinstance(
+        device.dps.get(FAN_POWER_DP_ID), bool
+    ):
+        return True
+    return False
 
 
 def _is_switch_button_dp(device: TuyaDeviceDescription, dp_id: str) -> bool:

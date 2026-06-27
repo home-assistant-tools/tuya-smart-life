@@ -75,6 +75,12 @@ def _remove_stale_registry_entries(
         f"{device.dev_id}_{dp_id}"
         for device, dp_id, _, _ in local_runtime.switch_button_dps()
     }
+    active_unique_ids.update(
+        f"{device.dev_id}_fan" for device in local_runtime.fan_devices()
+    )
+    active_unique_ids.update(
+        f"{device.dev_id}_online" for device in local_runtime.hub_devices()
+    )
     entity_registry = er.async_get(hass)
     for entity in list(entity_registry.entities.values()):
         if entity.platform != DOMAIN or entity.config_entry_id != entry.entry_id:
