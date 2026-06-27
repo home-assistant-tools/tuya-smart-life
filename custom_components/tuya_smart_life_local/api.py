@@ -705,7 +705,11 @@ def _action_payloads(
     ):
         source = _json_value(detail.get(source_key))
         payloads.extend(_payloads_from_source(function, detail, source_key, source))
-    payloads.extend(_payloads_from_source(function, detail, "function", function))
+
+    direct = _extract_action_maps(function)
+    if direct:
+        action_dps, report_dps, label = direct
+        payloads.append((action_dps, report_dps, "function", label))
     return [
         payload
         for payload in payloads
