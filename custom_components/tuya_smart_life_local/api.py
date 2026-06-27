@@ -567,20 +567,33 @@ class TuyaSmartLifeMobileApi:
                 or _looks_like_ir_device(ext)
                 or _looks_like_ir_device(remote.raw)
             )
-            actions.extend(
-                _ir_actions_from_functions(
-                    home,
-                    remote_id,
-                    remote_name,
-                    hub_dev_id,
-                    remote,
-                    functions,
-                    force_ir,
-                    category,
-                    product_id,
-                    ext,
-                )
+            remote_actions = _ir_actions_from_functions(
+                home,
+                remote_id,
+                remote_name,
+                hub_dev_id,
+                remote,
+                functions,
+                force_ir,
+                category,
+                product_id,
+                ext,
             )
+            if force_ir and functions and not remote_actions:
+                _LOGGER.warning(
+                    "Tuya IR/RF remote %s (%s) via hub %s returned %s functions but "
+                    "no actionable DPS payloads. Function summary: %s",
+                    remote_name,
+                    remote_id,
+                    hub_dev_id,
+                    len(functions),
+                    json.dumps(
+                        _ir_function_debug_summary(functions),
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                )
+            actions.extend(remote_actions)
         return actions
 
     def fetch_devices(
@@ -688,6 +701,55 @@ def _action_details(function: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(data_points, list):
         return [item for item in data_points if isinstance(item, dict)]
     return [function]
+
+
+def _ir_function_debug_summary(functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for function in functions[:20]:
+        if not isinstance(function, dict):
+            continue
+        item: dict[str, Any] = {
+            "keys": sorted(str(key) for key in function),
+            "id": function.get("id"),
+            "functionCode": function.get("functionCode"),
+            "functionName": function.get("functionName") or function.get("name"),
+            "functionType": function.get("functionType") or function.get("type"),
+            "actionExecutor": function.get("actionExecutor")
+            or function.get("executor"),
+            "values": _json_value(function.get("values")),
+            "valueRangeJson": _json_value(function.get("valueRangeJson")),
+            "tasks": _json_value(function.get("tasks")),
+            "taskMap": _json_value(function.get("taskMap")),
+            "executorProperty": _json_value(function.get("executorProperty")),
+            "extraProperty": _json_value(function.get("extraProperty")),
+        }
+        data_points = function.get("dataPoints")
+        if isinstance(data_points, list):
+            item["dataPoints"] = [
+                {
+                    "keys": sorted(str(key) for key in point),
+                    "id": point.get("id"),
+                    "dpId": point.get("dpId"),
+                    "dpCode": point.get("dpCode"),
+                    "dpName": point.get("dpName") or point.get("name"),
+                    "values": _json_value(point.get("values")),
+                    "valueRangeJson": _json_value(point.get("valueRangeJson")),
+                    "tasks": _json_value(point.get("tasks")),
+                    "taskMap": _json_value(point.get("taskMap")),
+                    "executorProperty": _json_value(point.get("executorProperty")),
+                    "extraProperty": _json_value(point.get("extraProperty")),
+                }
+                for point in data_points[:10]
+                if isinstance(point, dict)
+            ]
+        summary.append(
+            {
+                key: value
+                for key, value in item.items()
+                if value not in (None, "", [], {})
+            }
+        )
+    return summary
 
 
 def _action_payloads(
