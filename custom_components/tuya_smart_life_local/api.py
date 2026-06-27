@@ -978,12 +978,12 @@ def _nested_value(value: Any, key: str) -> Any:
             return value[key]
         for child in value.values():
             found = _nested_value(child, key)
-            if found:
+            if found is not None:
                 return found
     if isinstance(value, list):
         for child in value:
             found = _nested_value(child, key)
-            if found:
+            if found is not None:
                 return found
     return None
 
