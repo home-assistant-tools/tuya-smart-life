@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Tuya Smart Life Local",
-        "description": "Login with your Smart Life or Tuya Smart account, then select one or more homes to sync."
+        "description": "Login with your Smart Life or Tuya Smart email/phone account, then select one or more homes to sync."
       },
       "select_homes": {
         "title": "Select homes",
@@ -12,7 +12,7 @@
     },
     "error": {
       "cannot_connect": "Could not login or fetch homes from Tuya.",
-      "invalid_auth": "Email/username or password is incorrect.",
+      "invalid_auth": "Email/phone number or password is incorrect.",
       "invalid_client": "The bundled Tuya mobile client profile was rejected by Tuya.",
       "no_home_selected": "Select at least one home.",
       "unknown": "Unexpected error."

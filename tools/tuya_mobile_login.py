@@ -20,7 +20,12 @@ from tuya_mobile_crypto import (
 
 DEFAULT_ENDPOINT = "https://a1.tuyaus.com/api.json"
 DEFAULT_TOKEN_API = "smartlife.m.user.username.token.get"
-DEFAULT_LOGIN_API = "smartlife.m.user.email.password.login"
+DEFAULT_EMAIL_LOGIN_API = "smartlife.m.user.email.password.login"
+DEFAULT_MOBILE_LOGIN_APIS = (
+    ("smartlife.m.user.mobile.passwd.login", "4.0", "options"),
+    ("smartlife.m.user.mobile.passwd.login", "4.0", "extInfo"),
+    ("thing.m.user.mobile.passwd.login", "4.0", "extInfo"),
+)
 HOME_LIST_API = ("m.life.home.space.list", "1.0")
 OWNED_DEVICE_API = ("m.life.my.group.device.list", "2.2")
 DEVICE_GROUP_API = ("m.life.my.group.device.group.list", "4.3")
@@ -66,6 +71,7 @@ SENSITIVE_MARKERS = (
 )
 PII_MARKERS = ("email", "mobile", "receiver", "username")
 NO_POST_DATA = object()
+LOGIN_OPTIONS = '{"group": 1,"mfaCode": ""}'
 
 
 def env_value(name):
@@ -100,9 +106,62 @@ def rsa_pkcs1_v15_encrypt_hex(message, modulus_dec, exponent_dec):
     return cipher_int.to_bytes(key_len, "big").hex()
 
 
-def stable_device_id(email, app_id, package_name):
-    material = f"{package_name}|{app_id}|{email}".encode("utf-8")
+def stable_device_id(username, app_id, package_name):
+    material = f"{package_name}|{app_id}|{username}".encode("utf-8")
     return hashlib.sha256(material).hexdigest()[:44]
+
+
+def is_email_username(username):
+    return "@" in username.strip()
+
+
+def normalize_mobile_username(username, country_code):
+    value = username.strip()
+    for char in (" ", "-", "(", ")"):
+        value = value.replace(char, "")
+    code = str(country_code).strip().lstrip("+")
+    if value.startswith("+"):
+        digits = value[1:]
+        if code and digits.startswith(code) and len(digits) > len(code):
+            return digits[len(code) :]
+        return digits
+    if code and value.startswith(f"00{code}") and len(value) > len(code) + 2:
+        return value[len(code) + 2 :]
+    return value
+
+
+def mobile_username_candidates(username, country_code):
+    mobile = normalize_mobile_username(username, country_code)
+    candidates = [mobile]
+    if mobile.startswith("0") and len(mobile) > 1:
+        candidates.append(mobile[1:])
+    return list(dict.fromkeys(candidates))
+
+
+def should_try_next_mobile_login_api(response):
+    code = str(response.get("errorCode") or response.get("code") or "")
+    msg = str(
+        response.get("errorMsg") or response.get("msg") or response.get("status") or ""
+    )
+    text = f"{code}:{msg}".upper()
+    auth_markers = (
+        "CAPTCHA",
+        "LOCK",
+        "MFA",
+        "PASSWD",
+        "PASSWORD",
+        "VERIFY",
+    )
+    return not any(marker in text for marker in auth_markers)
+
+
+def parse_mobile_login_api(value):
+    parts = value.split(":")
+    if len(parts) == 1:
+        return parts[0], "4.0", "extInfo"
+    if len(parts) == 2:
+        return parts[0], parts[1], "extInfo"
+    return parts[0], parts[1], parts[2]
 
 
 def redact(value, key="", show_secrets=False):
@@ -132,7 +191,7 @@ class TuyaMobileClient:
         self.args = args
         self.native_key = native_key
         self.device_id = args.device_id or stable_device_id(
-            args.email, args.app_id, args.package_name
+            args.username, args.app_id, args.package_name
         )
 
     def request(self, api, version, payload=NO_POST_DATA, sid=None, extra=None):
@@ -192,9 +251,10 @@ class TuyaMobileClient:
                 return exc.code, {"success": False, "raw": body}
 
     def login(self):
+        username = self.args.username.strip()
         token_payload = {
             "countryCode": self.args.country_code,
-            "username": self.args.email,
+            "username": username,
             "isUid": False,
         }
         token_status, token_response = self.request(
@@ -210,18 +270,42 @@ class TuyaMobileClient:
             token_result["publicKey"],
             token_result["exponent"],
         )
-        login_payload = {
-            "countryCode": self.args.country_code,
-            "email": self.args.email,
-            "passwd": encrypted_password,
-            "options": '{"group": 1,"mfaCode": ""}',
-            "token": token_result["token"],
-            "ifencrypt": 1,
-        }
-        login_status, login_response = self.request(
-            self.args.login_api, "3.0", login_payload
-        )
-        return token_status, token_response, login_status, login_response
+        if is_email_username(username):
+            login_payload = {
+                "countryCode": self.args.country_code,
+                "email": username,
+                "passwd": encrypted_password,
+                "options": LOGIN_OPTIONS,
+                "token": token_result["token"],
+                "ifencrypt": 1,
+            }
+            login_status, login_response = self.request(
+                self.args.login_api, "3.0", login_payload
+            )
+            return token_status, token_response, login_status, login_response
+
+        last_status = None
+        last_response = None
+        for mobile in mobile_username_candidates(username, self.args.country_code):
+            for api, version, mfa_field in self.args.mobile_login_apis:
+                login_payload = {
+                    "countryCode": self.args.country_code,
+                    "mobile": mobile,
+                    "passwd": encrypted_password,
+                    mfa_field: LOGIN_OPTIONS,
+                    "token": token_result["token"],
+                    "ifencrypt": 1,
+                }
+                last_status, last_response = self.request(api, version, login_payload)
+                if last_response.get("success"):
+                    break
+                if not should_try_next_mobile_login_api(last_response):
+                    break
+            if last_response and last_response.get("success"):
+                break
+            if last_response and not should_try_next_mobile_login_api(last_response):
+                break
+        return token_status, token_response, last_status, last_response
 
     def list_homes(self, sid):
         return self.request(*HOME_LIST_API, sid=sid)
@@ -389,13 +473,14 @@ def load_password(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Call Tuya Smart mobile email/password login with native request signing."
+        description="Call Tuya Smart mobile email/phone password login with native request signing."
     )
     parser.add_argument(
-        "--email",
-        default=env_value("TUYA_EMAIL"),
-        help="Login email; defaults to TUYA_EMAIL",
+        "--username",
+        default=env_value("TUYA_USERNAME") or env_value("TUYA_EMAIL"),
+        help="Login email or phone number; defaults to TUYA_USERNAME or TUYA_EMAIL",
     )
+    parser.add_argument("--email", dest="username", help=argparse.SUPPRESS)
     parser.add_argument(
         "--password-env",
         default="TUYA_PASSWORD",
@@ -415,7 +500,15 @@ def parse_args():
         "--token-api", default=env_value("TUYA_TOKEN_API") or DEFAULT_TOKEN_API
     )
     parser.add_argument(
-        "--login-api", default=env_value("TUYA_LOGIN_API") or DEFAULT_LOGIN_API
+        "--login-api",
+        default=env_value("TUYA_LOGIN_API") or DEFAULT_EMAIL_LOGIN_API,
+        help="Email login API override",
+    )
+    parser.add_argument(
+        "--mobile-login-api",
+        action="append",
+        default=[],
+        help="Mobile login API override as api[:version[:mfa_field]]; may repeat",
     )
     parser.add_argument(
         "--timeout", type=int, default=int(env_value("TUYA_TIMEOUT") or "20")
@@ -479,7 +572,13 @@ def parse_args():
         help="Do not redact session ids, ecode, local keys, or token fields",
     )
     args = parser.parse_args()
-    args.email = required(args.email, "--email or TUYA_EMAIL")
+    args.username = required(args.username, "--username, TUYA_USERNAME, or TUYA_EMAIL")
+    if args.mobile_login_api:
+        args.mobile_login_apis = [
+            parse_mobile_login_api(value) for value in args.mobile_login_api
+        ]
+    else:
+        args.mobile_login_apis = list(DEFAULT_MOBILE_LOGIN_APIS)
     args.password = load_password(args)
     return args
 

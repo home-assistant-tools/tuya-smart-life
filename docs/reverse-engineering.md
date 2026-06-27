@@ -38,6 +38,7 @@ Confirmed plaintext `et=0` calls used by the integration:
 | --- | --- | --- | --- |
 | Login token | `smartlife.m.user.username.token.get` | `2.0` | `countryCode`, `username`, `isUid` |
 | Email/password login | `smartlife.m.user.email.password.login` | `3.0` | `countryCode`, `email`, `passwd`, `token`, `ifencrypt` |
+| Mobile/password login | `smartlife.m.user.mobile.passwd.login` or `thing.m.user.mobile.passwd.login` | `4.0` | `countryCode`, `mobile`, `passwd`, `token`, `ifencrypt`, MFA metadata |
 | Home list | `m.life.home.space.list` | `1.0` | none |
 | Device list in home | `m.life.my.group.device.list` | `2.2` | `gid` |
 | Device detail | `thing.m.device.get` | `4.1` | `devId` |
@@ -88,12 +89,13 @@ payloads by itself.
 
 ## Standalone Login Tool
 
-`tools/tuya_mobile_login.py` performs a fresh email/password login using the
-recovered mobile request signature. Keep credentials and extracted app material
-in environment variables:
+`tools/tuya_mobile_login.py` performs a fresh email/password or mobile/password
+login using the recovered mobile request signature. Keep credentials and
+extracted app material in environment variables:
 
 ```bash
-export TUYA_EMAIL='user@example.com'
+export TUYA_USERNAME='user@example.com'
+# or: export TUYA_USERNAME='0912345678'
 export TUYA_PASSWORD='...'
 export TUYA_APP_ID='<client-id>'
 export TUYA_APP_SECRET='<app-secret>'
@@ -101,6 +103,7 @@ export TUYA_CERT_SHA256='<apk-cert-sha256>'
 export TUYA_BMP='/path/to/t_s.bmp'
 
 python3 tools/tuya_mobile_login.py
+python3 tools/tuya_mobile_login.py --username 0912345678
 python3 tools/tuya_mobile_login.py --action homes
 python3 tools/tuya_mobile_login.py --action devices --home-id <home-id>
 python3 tools/tuya_mobile_login.py --action devices --json

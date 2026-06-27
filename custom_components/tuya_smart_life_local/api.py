@@ -22,7 +22,12 @@ from .models import (
 )
 
 TOKEN_API = ("smartlife.m.user.username.token.get", "2.0")
-LOGIN_API = ("smartlife.m.user.email.password.login", "3.0")
+EMAIL_LOGIN_API = ("smartlife.m.user.email.password.login", "3.0")
+MOBILE_LOGIN_APIS = (
+    ("smartlife.m.user.mobile.passwd.login", "4.0", "options"),
+    ("smartlife.m.user.mobile.passwd.login", "4.0", "extInfo"),
+    ("thing.m.user.mobile.passwd.login", "4.0", "extInfo"),
+)
 HOME_LIST_API = ("m.life.home.space.list", "1.0")
 OWNED_DEVICE_API = ("m.life.my.group.device.list", "2.2")
 DEVICE_GROUP_API = ("m.life.my.group.device.group.list", "4.3")
@@ -31,6 +36,7 @@ LOCAL_DEVICE_API = ("m.life.app.smart.local.device.list", "1.1")
 ENERGY_DEVICE_API = ("m.energy.home.device.list", "3.0")
 
 NO_POST_DATA = object()
+LOGIN_OPTIONS = '{"group": 1,"mfaCode": ""}'
 
 SIGN_KEYS = {
     "a",
@@ -153,9 +159,53 @@ def rsa_pkcs1_v15_encrypt_hex(
     return cipher_int.to_bytes(key_len, "big").hex()
 
 
-def stable_device_id(email: str, app_id: str, package_name: str) -> str:
-    material = f"{package_name}|{app_id}|{email}".encode()
+def stable_device_id(username: str, app_id: str, package_name: str) -> str:
+    material = f"{package_name}|{app_id}|{username}".encode()
     return hashlib.sha256(material).hexdigest()[:44]
+
+
+def is_email_username(username: str) -> bool:
+    return "@" in username.strip()
+
+
+def normalize_mobile_username(username: str, country_code: str) -> str:
+    value = username.strip()
+    for char in (" ", "-", "(", ")"):
+        value = value.replace(char, "")
+    code = str(country_code).strip().lstrip("+")
+    if value.startswith("+"):
+        digits = value[1:]
+        if code and digits.startswith(code) and len(digits) > len(code):
+            return digits[len(code) :]
+        return digits
+    if code and value.startswith(f"00{code}") and len(value) > len(code) + 2:
+        return value[len(code) + 2 :]
+    return value
+
+
+def mobile_username_candidates(username: str, country_code: str) -> list[str]:
+    mobile = normalize_mobile_username(username, country_code)
+    candidates = [mobile]
+    if mobile.startswith("0") and len(mobile) > 1:
+        candidates.append(mobile[1:])
+    return list(dict.fromkeys(candidates))
+
+
+def should_try_next_mobile_login_api(response: dict[str, Any]) -> bool:
+    code = str(response.get("errorCode") or response.get("code") or "")
+    msg = str(
+        response.get("errorMsg") or response.get("msg") or response.get("status") or ""
+    )
+    text = f"{code}:{msg}".upper()
+    auth_markers = (
+        "CAPTCHA",
+        "LOCK",
+        "MFA",
+        "PASSWD",
+        "PASSWORD",
+        "VERIFY",
+    )
+    return not any(marker in text for marker in auth_markers)
 
 
 class TuyaSmartLifeMobileApi:
@@ -245,11 +295,12 @@ class TuyaSmartLifeMobileApi:
                 raise TuyaMobileApiError(body) from err
 
     def login(self) -> TuyaSession:
+        username = self.config.email.strip()
         _, token_response = self.request(
             *TOKEN_API,
             {
                 "countryCode": self.config.country_code,
-                "username": self.config.email,
+                "username": username,
                 "isUid": False,
             },
         )
@@ -262,18 +313,60 @@ class TuyaSmartLifeMobileApi:
             token["publicKey"],
             token["exponent"],
         )
-        _, login_response = self.request(
-            *LOGIN_API,
-            {
-                "countryCode": self.config.country_code,
-                "email": self.config.email,
-                "passwd": encrypted_password,
-                "options": '{"group": 1,"mfaCode": ""}',
-                "token": token["token"],
-                "ifencrypt": 1,
-            },
-        )
-        self._raise_for_response(login_response, "password login")
+        if is_email_username(username):
+            _, login_response = self.request(
+                *EMAIL_LOGIN_API,
+                {
+                    "countryCode": self.config.country_code,
+                    "email": username,
+                    "passwd": encrypted_password,
+                    "options": LOGIN_OPTIONS,
+                    "token": token["token"],
+                    "ifencrypt": 1,
+                },
+            )
+            self._raise_for_response(login_response, "email password login")
+        else:
+            login_response = self._mobile_password_login(
+                username,
+                encrypted_password,
+                str(token["token"]),
+            )
+        return self._session_from_login_response(login_response)
+
+    def _mobile_password_login(
+        self,
+        username: str,
+        encrypted_password: str,
+        token: str,
+    ) -> dict[str, Any]:
+        last_context = "mobile password login"
+        last_response: dict[str, Any] | None = None
+        for mobile in mobile_username_candidates(username, self.config.country_code):
+            for api, version, mfa_field in MOBILE_LOGIN_APIS:
+                payload = {
+                    "countryCode": self.config.country_code,
+                    "mobile": mobile,
+                    "passwd": encrypted_password,
+                    mfa_field: LOGIN_OPTIONS,
+                    "token": token,
+                    "ifencrypt": 1,
+                }
+                _, response = self.request(api, version, payload)
+                if response.get("success"):
+                    return response
+                last_context = f"mobile password login {api}"
+                last_response = response
+                if not should_try_next_mobile_login_api(response):
+                    break
+            if last_response and not should_try_next_mobile_login_api(last_response):
+                break
+
+        self._raise_for_response(last_response or {}, last_context)
+        raise TuyaMobileApiError(f"{last_context} failed")
+
+    @staticmethod
+    def _session_from_login_response(login_response: dict[str, Any]) -> TuyaSession:
         result = login_response["result"]
         domain = result.get("domain") if isinstance(result.get("domain"), dict) else {}
         return TuyaSession(

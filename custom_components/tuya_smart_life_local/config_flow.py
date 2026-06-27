@@ -180,10 +180,15 @@ class TuyaSmartLifeLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 def _error_key_from_mobile_error(err: TuyaMobileApiError) -> str:
-    message = str(err)
-    if "ILLEGAL_CLIENT_ID" in message:
+    message = str(err).upper()
+    if "ILLEGAL_CLIENT_ID" in message or "CLIENT" in message:
         return "invalid_client"
-    if "USER_PASSWD_WRONG" in message or "PASSWORD" in message:
+    if (
+        "PASSWORD" in message
+        or "PASSWD" in message
+        or "USER_NOT_EXIST" in message
+        or "USER_NOT_FOUND" in message
+    ):
         return "invalid_auth"
     return "cannot_connect"
 

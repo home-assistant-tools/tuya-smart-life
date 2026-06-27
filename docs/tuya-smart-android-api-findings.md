@@ -33,6 +33,7 @@ Observed successful account login sequence:
 | --- | --- | --- | --- | --- | --- |
 | Login token | `smartlife.m.user.username.token.get` | `2.0` | No | `countryCode`, `username`, `isUid` | First call before password login. `username` is the email for email login. |
 | Password login | `smartlife.m.user.email.password.login` | `3.0` | No | `countryCode`, `email`, `passwd`, `token`, `ifencrypt`, `extInfo` | Confirmed live through the Android app. |
+| Mobile password login | `smartlife.m.user.mobile.passwd.login` | `4.0` | No | `countryCode`, `mobile`, `passwd`, `token`, `ifencrypt`, MFA metadata | Implemented as a Smart Life mobile-login candidate; phone-account live verification is still pending. |
 
 Static SDK wrappers also contain older/internal `thing.m.*` names:
 
@@ -729,7 +730,7 @@ Current practical read API map:
    - `smartlife.m.device.ref.info.list`
    - `smartlife.m.device.sig.mesh.list`
 
-Standalone email/password login implementation:
+Standalone email/password and mobile/password login implementation:
 
 1. Call `smartlife.m.user.username.token.get` v2.0 with plaintext `et=0`
    signed `postData`:
@@ -746,8 +747,8 @@ Standalone email/password login implementation:
 4. RSA encrypt that MD5 hex string using PKCS#1 v1.5 padding and the
    `publicKey`/`exponent` from step 2. The Android helper returns the RSA
    ciphertext as lowercase hex.
-5. Call `smartlife.m.user.email.password.login` v3.0 with plaintext `et=0`
-   signed `postData`:
+5. For email login, call `smartlife.m.user.email.password.login` v3.0 with
+   plaintext `et=0` signed `postData`:
 
 ```json
 {
@@ -760,9 +761,19 @@ Standalone email/password login implementation:
 }
 ```
 
-`tools/tuya_mobile_login.py` implements this flow and was verified against the
-live mobile API. The script redacts `sid`, `ecode`, token, password, and key
-material in its default output.
+For mobile login, the integration and script use the same token and RSA password
+steps, then try these plaintext `et=0` password-login calls:
+
+- `smartlife.m.user.mobile.passwd.login` v4.0 with `options`
+- `smartlife.m.user.mobile.passwd.login` v4.0 with `extInfo`
+- `thing.m.user.mobile.passwd.login` v4.0 with `extInfo`
+
+The email path was verified against the live mobile API. The phone path is
+implemented from static Android evidence and API-name symmetry; it still needs a
+phone-number account test. For country-code-separated mobile APIs, the current
+implementation tries both `09...` and `9...` forms for Vietnam-style numbers.
+The script redacts `sid`, `ecode`, token, password, and key material in its
+default output.
 
 Standalone home and device calls after login:
 
