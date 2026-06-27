@@ -422,6 +422,81 @@ Common live request envelope fields for the account-login session:
 No plaintext password, session token, cookie, or decrypted account response
 payload is stored in this repository.
 
+## Request Signing And Response Decryption
+
+Request signing is split between Java request assembly and native crypto:
+
+1. `ThingApiParams.getRequestBody()` builds request parameters and encrypted
+   body fields.
+2. `ThingApiSignManager.generateSignatureSdk(...)` sorts selected keys and
+   builds the canonical string.
+3. If `postData` is present, the app signs the swapped MD5 of encrypted
+   `postData`, not raw `postData`.
+4. The canonical string is passed to
+   `ThingNetworkSecurity.doCommandNative(context, 1, signInputBytes, null, d)`.
+5. Native `libthing_security.so` returns the final request `sign`.
+
+Canonical sign keys observed in `ThingApiSignManager`:
+
+- `a`, `v`, `lat`, `lon`, `lang`, `deviceId`, `appVersion`, `ttid`, `h5`,
+  `h5Token`, `os`, `clientId`, `postData`, `time`, `requestId`, `et`, `n4h5`,
+  `sid`, `chKey`, `sp`.
+
+Canonical input format:
+
+```text
+key=value||key=value||...
+```
+
+`postData` hash transform:
+
+```text
+swappedMd5 = md5[8:16] + md5[0:8] + md5[24:32] + md5[16:24]
+```
+
+Response decryption for normal `et=3` API calls:
+
+1. Parse encrypted response as `BusinessEncryptResponse` containing `result`,
+   `t`, and `sign`.
+2. Derive the per-request AES key with
+   `ThingNetworkSecurity.getEncryptoKey(requestId, ecodeOrNull)`.
+3. Verify response signature:
+
+```text
+md5("result=" + result + "||t=" + t + "||" + aesKeyAsUtf8)
+```
+
+4. Base64-decode `result`.
+5. Treat the first 12 bytes as AES-GCM nonce and the final 16 bytes as GCM tag.
+6. AES-GCM decrypt with the key from step 2.
+7. Gunzip the plaintext if it is gzip-compressed.
+8. Decode as UTF-8 JSON.
+
+The remaining native dependency is `getEncryptoKey(...)` and command `1`
+signing. These are currently solved by running inside the patched Android app
+with Frida/Gadget, not by a fully standalone reimplementation.
+
+Tooling added in this repository:
+
+- `tools/frida_tuya_network_crypto_dump.js`: hooks native sign, request
+  encryption key derivation, encrypted request plaintext, and decrypted response
+  plaintext.
+- `tools/tuya_mobile_crypto.js`: reproduces Java-side sign input formatting,
+  swapped `postData` MD5, and AES-GCM response decryption when a request key is
+  available.
+- `tools/tuya_mobile_crypto.py`: Python helper for Java-side sign input and
+  swapped `postData` MD5.
+
+Plaintext confirmed with the Frida hook:
+
+- `smartlife.m.api.batch.invoke` returned room data for home `92258848`:
+  `Phòng khách`, `Master`, `Liên`, `Đang`, `WC`, and `Bếp`.
+- `m.energy.home.device.list` v3.0 returned these device names:
+  `cks`, `backend`, `rọi giường master 2`, `rọi giường master 1`,
+  `rọi gương master`, `rọi tab master`, and `hành lang`.
+- `m.life.app.home.page.card.list` v2.9 returned home card entries for
+  `backend` and `cks`.
+
 Current practical read API map:
 
 1. Login/guest setup:

@@ -22,5 +22,21 @@ This is a replay/debug tool. It reuses the captured signed envelope, session
 fields, and encrypted `postData`; it does not generate fresh Tuya signatures or
 decrypt encrypted `result` payloads yet.
 
+## Mobile Crypto Helpers
+
+`tools/tuya_mobile_crypto.js` implements the Java-side request signing input
+format, the swapped MD5 used for encrypted `postData`, and `et=3` response
+decryption when the per-request AES key is known:
+
+```bash
+node tools/tuya_mobile_crypto.js post-md5 '{"homeId":92258848}'
+node tools/tuya_mobile_crypto.js sign-input '{"a":"m.life.home.space.list","v":"1.0"}'
+node tools/tuya_mobile_crypto.js decrypt-response --key-hex <key> --response '<json>'
+```
+
+`tools/frida_tuya_network_crypto_dump.js` hooks the Android app to log native
+sign inputs/results, per-request encryption keys, encrypted request plaintext,
+and decrypted response plaintext.
+
 The APK and decompiled application sources are intentionally not committed here.
 Only the derived API notes are stored in this repository.
