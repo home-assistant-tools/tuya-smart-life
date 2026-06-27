@@ -374,13 +374,63 @@ Additional live API names observed after accepted guest registration:
 | `smartlife.m.user.properties.get` | User property bag. |
 | `smartlife.m.token.get` | Session/token refresh path. |
 
+## Successful Account Login Capture
+
+After the native client-identity spoof was applied, account login was also
+validated through the patched Android app and MITM proxy.
+
+Capture file in the reverse-engineering workspace:
+
+- `mitm/tuya-20260627-083834-account-login.mitm`
+
+Runtime result:
+
+- Login succeeded for a real account through the app UI.
+- The app loaded the Home tab after login.
+- Current home shown in the UI: `Kiara`.
+- Room tabs visible in the UI included `Favorites`, `Phòng khách`, and
+  `Master`.
+- Device cards visible in `Phòng khách` included:
+  - `backend`, switch type (`Công tắc`), status off (`Tắt`), function `RESET`.
+  - `cks`, function `RESET`.
+
+Live account-login API sequence observed:
+
+| API name | Version | Status | Notes |
+| --- | --- | --- | --- |
+| `smartlife.m.user.username.token.get` | `2.0` | `200` | Token preflight before password login. |
+| `smartlife.m.user.email.password.login` | `3.0` | `200` | Email/password login request. |
+| `m.life.home.space.list` | `1.0` | `200` | Home/space list after login. |
+| `smartlife.m.api.batch.invoke` | `1.0` | `200` | Home page/device batch refresh. Carries encrypted `postData`; includes `gid`. |
+| `m.life.app.smart.local.device.list` | `1.1` | `200` | Local/home device list request. Carries encrypted `postData`. |
+| `m.energy.home.device.list` | `3.0` | `200` | Energy/home device list request. Carries encrypted `postData`. |
+| `m.life.app.home.device.hide.list` | `1.0` | `200` | Hidden-device list for the home page. |
+| `smartlife.m.token.get` | `1.0` | `200` | Token/session refresh path after login. |
+
+Common live request envelope fields for the account-login session:
+
+- Endpoint: `POST https://a1.tuyaus.com/api.json`.
+- Content type: `application/x-www-form-urlencoded`.
+- Common fields: `a`, `v`, `appVersion`, `appRnVersion`, `bizData`,
+  `chKey`, `channel`, `clientId`, `cp`, `deviceCoreVersion`, `deviceId`,
+  `et`, `lang`, `nd`, `os`, `osSystem`, `platform`, `requestId`,
+  `sdkVersion`, `sid`, `sign`, `time`, `timeZoneId`, `ttid`, and optional
+  encrypted `postData`.
+- Accepted-client `chKey` remained `3f7060ea`.
+- The account home identifier observed in batch calls was `gid=92258848`.
+
+No plaintext password, session token, cookie, or decrypted account response
+payload is stored in this repository.
+
 Current practical read API map:
 
 1. Login/guest setup:
    - `smartlife.m.user.guest.register` v1.0 for guest mode.
-   - Static account-login findings above still point to
-     `thing.m.user.username.token.get`, `thing.m.user.email.password.login`,
-     and `thing.m.user.mobile.passwd.login` for real account login.
+   - Real account login was confirmed live with
+     `smartlife.m.user.username.token.get` v2.0 followed by
+     `smartlife.m.user.email.password.login` v3.0.
+   - Static account-login findings above also identify the older/internal
+     `thing.m.*` method names used by the SDK wrapper.
 2. List homes:
    - `m.life.home.space.list`.
 3. Refresh/list home devices:
