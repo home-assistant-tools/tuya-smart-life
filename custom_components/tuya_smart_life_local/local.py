@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import fields
+import ipaddress
 import json
 import logging
+import socket
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -14,6 +17,8 @@ from .models import TuyaDeviceDescription
 _LOGGER = logging.getLogger(__name__)
 
 DISCOVERY_PORTS = (6666, 6667, 6699, 7000)
+DISCOVERY_SCAN_SECONDS = 8
+FORCE_SCAN_INTERVAL_SECONDS = 300
 
 
 class _DiscoveryProtocol(asyncio.DatagramProtocol):
@@ -37,6 +42,7 @@ class TuyaLocalRuntime:
         self._tinytuya_devices: dict[str, Any] = {}
         self._lock = asyncio.Lock()
         self._scan_task: asyncio.Task[None] | None = None
+        self._last_force_scan = 0.0
 
     async def async_start(self) -> None:
         if self.transports:
@@ -102,18 +108,47 @@ class TuyaLocalRuntime:
     def _scan_once(self) -> None:
         try:
             import tinytuya
+            from tinytuya import scanner
         except ImportError:
             return
+
+        results = None
+        scan_devices = _tinytuya_scan_devices(self.devices.values())
+        force_networks: list[str] | bool = False
+        now = time.monotonic()
+        if scan_devices and now - self._last_force_scan >= FORCE_SCAN_INTERVAL_SECONDS:
+            force_networks = _candidate_force_scan_networks(self.devices.values())
+            self._last_force_scan = now
+
         try:
+            if scan_devices:
+                results = scanner.devices(
+                    verbose=False,
+                    scantime=DISCOVERY_SCAN_SECONDS,
+                    color=False,
+                    poll=False,
+                    forcescan=force_networks,
+                    discover=True,
+                    wantids=[device["id"] for device in scan_devices],
+                    assume_yes=True,
+                    tuyadevices=scan_devices,
+                )
+            else:
+                results = tinytuya.deviceScan(
+                    verbose=False,
+                    maxretry=2,
+                    color=False,
+                    poll=False,
+                    forcescan=False,
+                )
+        except (AttributeError, TypeError):
             results = tinytuya.deviceScan(
                 verbose=False,
                 maxretry=2,
                 color=False,
                 poll=False,
-                forcescan=True,
+                forcescan=False,
             )
-        except TypeError:
-            results = tinytuya.deviceScan(False, 2)
         except Exception:
             _LOGGER.debug("TinyTuya deviceScan failed", exc_info=True)
             return
@@ -132,7 +167,7 @@ class TuyaLocalRuntime:
         for device in devices:
             old = existing.get(device.dev_id)
             if old:
-                if old.ip and old.ip != device.ip:
+                if _is_lan_ip(old.ip) and old.ip != device.ip:
                     device.ip = old.ip
                 if old.protocol_version:
                     device.protocol_version = old.protocol_version
@@ -178,7 +213,7 @@ class TuyaLocalRuntime:
         if not device:
             return
 
-        ip = payload.get("ip") or fallback_ip
+        ip = _lan_ip(payload.get("ip") or fallback_ip)
         version = payload.get("version") or payload.get("ver")
         changed = False
         if ip and ip != device.ip:
@@ -342,3 +377,73 @@ def _protocol_version(value: str | None) -> float:
     except ValueError:
         _LOGGER.debug("Unknown Tuya protocol version %s, falling back to 3.3", value)
         return 3.3
+
+
+def _tinytuya_scan_devices(
+    devices: Any,
+) -> list[dict[str, str]]:
+    scan_devices: list[dict[str, str]] = []
+    for device in devices:
+        if not device.local_key:
+            continue
+        record = {
+            "id": device.dev_id,
+            "name": device.name,
+            "key": device.local_key,
+        }
+        if device.mac:
+            record["mac"] = device.mac
+        scan_devices.append(record)
+    return scan_devices
+
+
+def _candidate_force_scan_networks(devices: Any) -> list[str]:
+    networks: set[str] = set()
+    primary_network = _primary_lan_network()
+    if primary_network:
+        networks.add(primary_network)
+    for device in devices:
+        network = _network_for_lan_ip(device.ip)
+        if network:
+            networks.add(network)
+    return sorted(networks)
+
+
+def _primary_lan_network() -> str | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            ip = sock.getsockname()[0]
+    except OSError:
+        return None
+    return _network_for_lan_ip(ip)
+
+
+def _network_for_lan_ip(value: str | None) -> str | None:
+    ip = _lan_ip(value)
+    if not ip:
+        return None
+    try:
+        return str(ipaddress.ip_network(f"{ip}/24", strict=False))
+    except ValueError:
+        return None
+
+
+def _lan_ip(value: Any) -> str | None:
+    if not value:
+        return None
+    try:
+        address = ipaddress.ip_address(str(value))
+    except ValueError:
+        return None
+    if address.version != 4:
+        return None
+    if address.is_loopback or address.is_multicast or address.is_unspecified:
+        return None
+    if address.is_private or address.is_link_local:
+        return str(address)
+    return None
+
+
+def _is_lan_ip(value: Any) -> bool:
+    return _lan_ip(value) is not None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import ipaddress
 from typing import Any
 
 
@@ -132,6 +133,19 @@ def dps_from_raw(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     }
 
 
+def local_ip_from_raw(raw: dict[str, Any]) -> str | None:
+    ip = raw.get("ip")
+    if not ip:
+        return None
+    try:
+        address = ipaddress.ip_address(str(ip))
+    except ValueError:
+        return None
+    if address.version == 4 and (address.is_private or address.is_link_local):
+        return str(address)
+    return None
+
+
 def device_from_raw(
     raw: dict[str, Any],
     home: TuyaHome,
@@ -155,7 +169,7 @@ def device_from_raw(
         home_id=home.id,
         home_name=home.name,
         local_key=raw.get("localKey") or None,
-        ip=raw.get("ip") or None,
+        ip=local_ip_from_raw(raw),
         mac=raw.get("mac") or None,
         uuid=raw.get("uuid") or None,
         product_id=raw.get("productId") or None,
