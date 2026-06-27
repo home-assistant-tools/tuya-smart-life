@@ -23,6 +23,8 @@ SWITCH_BUTTON_DP_IDS = {str(dp_id) for dp_id in range(1, 9)}
 FAN_PRODUCT_IDS = {"tqfl5ws2csdtdaak"}
 FAN_POWER_DP_ID = "1"
 FAN_SPEED_DP_ID = "3"
+CHILD_PROTOCOL_FALLBACKS = ("3.4", "3.5", "3.3")
+NO_FALLBACK_RESPONSE = object()
 NON_BUTTON_NAME_PARTS = (
     "backlight",
     "child lock",
@@ -292,21 +294,78 @@ class TuyaLocalRuntime:
             )
 
     def _status(self, dev_id: str) -> dict[str, Any]:
-        device = self._tinytuya_device(dev_id)
-        if not device:
-            raise RuntimeError(f"Device {dev_id} is missing local metadata or IP")
-        response = device.status()
+        response = self._status_once(dev_id)
+        if _is_key_or_version_error(response):
+            fallback = self._try_child_protocol_fallback(dev_id, None, None)
+            if fallback is not NO_FALLBACK_RESPONSE:
+                response = fallback
         if isinstance(response, dict):
             return response
         return {}
 
+    def _status_once(self, dev_id: str) -> Any:
+        device = self._tinytuya_device(dev_id)
+        if not device:
+            raise RuntimeError(f"Device {dev_id} is missing local metadata or IP")
+        return device.status()
+
     def _set_dp(self, dev_id: str, dp_id: int, value: Any) -> Any:
+        response = self._set_dp_once(dev_id, dp_id, value)
+        if _is_key_or_version_error(response):
+            fallback = self._try_child_protocol_fallback(dev_id, dp_id, value)
+            if fallback is not NO_FALLBACK_RESPONSE:
+                return fallback
+        return response
+
+    def _set_dp_once(self, dev_id: str, dp_id: int, value: Any) -> Any:
         device = self._tinytuya_device(dev_id)
         if not device:
             raise RuntimeError(f"Device {dev_id} is missing local metadata or IP")
         if hasattr(device, "set_value"):
             return device.set_value(dp_id, value)
         return device.set_status(value, switch=dp_id)
+
+    def _try_child_protocol_fallback(
+        self,
+        dev_id: str,
+        dp_id: int | None,
+        value: Any,
+    ) -> Any:
+        device = self.devices.get(dev_id)
+        if not device or not device.is_child:
+            return NO_FALLBACK_RESPONSE
+        parent = self.devices.get(device.parent_dev_id or "")
+        if not parent or not parent.ip or not parent.local_key:
+            return NO_FALLBACK_RESPONSE
+
+        original_parent_version = parent.protocol_version
+        original_child_version = device.protocol_version
+        last_response: Any = None
+        for version in _child_protocol_candidates(parent.protocol_version):
+            parent.protocol_version = version
+            device.protocol_version = version
+            self._tinytuya_devices.pop(parent.dev_id, None)
+            self._tinytuya_devices.pop(device.dev_id, None)
+            response = (
+                self._status_once(dev_id)
+                if dp_id is None
+                else self._set_dp_once(dev_id, dp_id, value)
+            )
+            last_response = response
+            if not _is_key_or_version_error(response):
+                _LOGGER.debug(
+                    "Tuya child %s worked with protocol %s via hub %s",
+                    dev_id,
+                    version,
+                    parent.dev_id,
+                )
+                return response
+
+        parent.protocol_version = original_parent_version
+        device.protocol_version = original_child_version
+        self._tinytuya_devices.pop(parent.dev_id, None)
+        self._tinytuya_devices.pop(device.dev_id, None)
+        return last_response
 
     def _tinytuya_device(self, dev_id: str) -> Any:
         existing = self._tinytuya_devices.get(dev_id)
@@ -410,6 +469,24 @@ def _protocol_version(value: str | None) -> float:
     except ValueError:
         _LOGGER.debug("Unknown Tuya protocol version %s, falling back to 3.3", value)
         return 3.3
+
+
+def _child_protocol_candidates(current: str | None) -> list[str]:
+    current_text = str(current).strip() if current else ""
+    versions = [version for version in CHILD_PROTOCOL_FALLBACKS if version != current_text]
+    if current_text and current_text not in versions:
+        versions.append(current_text)
+    return versions
+
+
+def _is_key_or_version_error(response: Any) -> bool:
+    if not isinstance(response, dict):
+        return False
+    text = " ".join(
+        str(response.get(key) or "")
+        for key in ("Error", "Err", "error", "message", "Payload")
+    ).lower()
+    return "key or version" in text
 
 
 def _is_fan_device(device: TuyaDeviceDescription) -> bool:
