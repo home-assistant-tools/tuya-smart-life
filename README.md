@@ -43,6 +43,19 @@ node tools/tuya_mobile_crypto.js request-sign --native-key-hex <key> --input '<c
 node tools/tuya_mobile_crypto.js decrypt-response --key-hex <key> --response '<json>'
 ```
 
+`tools/tuya_mobile_crypto.py` also includes the native signing-key derivation
+for current Thing/Tuya SDK builds:
+
+```bash
+python3 tools/tuya_mobile_crypto.py extract-bmp-key --app-id <client-id> --bmp /path/to/t_s.bmp
+python3 tools/tuya_mobile_crypto.py derive-native-key \
+  --package-name <android-package> \
+  --cert-sha256 <apk-cert-sha256> \
+  --app-id <client-id> \
+  --app-secret <app-secret> \
+  --bmp /path/to/t_s.bmp
+```
+
 `tools/frida_tuya_network_crypto_dump.js` hooks the Android app to log native
 sign inputs/results, per-request encryption keys, encrypted request plaintext,
 and decrypted response plaintext.

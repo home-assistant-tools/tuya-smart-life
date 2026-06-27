@@ -604,6 +604,44 @@ Static reverse notes:
 - The native signing key is initialized by `doCommandNative(command=0)`, which
   uses app config bytes plus the certificate/client identity path and calls
   `read_keys_from_content` from `libthing_security_algorithm.so`.
+- Prior public reverse engineering of older Tuya SDK builds identified the
+  `certSha256_secret2_appSecret` HMAC-SHA256 scheme
+  ([nalajcie/tuya-sign-hacking](https://github.com/nalajcie/tuya-sign-hacking)).
+  The current Thing/Tuya SDK build keeps the same idea but prefixes the Android
+  package name.
+
+Current command `0` native signing-key derivation:
+
+```text
+secret2 = extract_tuya_bmp_key(appId, assets/t_s.bmp)
+nativeSigningKey =
+  packageName + "_" +
+  certSha256ColonUpper + "_" +
+  secret2 + "_" +
+  appSecret
+```
+
+Observed static inputs for Tuya Smart 7.8.6:
+
+- `packageName`: Android package name returned by `Context.getPackageName()`.
+- `appId`: `ThingSmartNetWork.mAppId`; in this build it comes from
+  `BuildConfig.THING_SMART_APPKEY`.
+- `appSecret`: `ThingSmartNetWork.mAppSecret`; in this build it comes from
+  `BuildConfig.THING_SMART_SECRET`.
+- `secret2`: extracted from `assets/t_s.bmp` using the same byte-selection and
+  rational interpolation algorithm published for older Tuya apps.
+- `certSha256ColonUpper`: SHA-256 digest of the APK signing certificate,
+  formatted as uppercase byte pairs separated by `:`.
+
+Validation performed on the current APK:
+
+- Extracting `secret2` from `assets/t_s.bmp` using the current app id produced a
+  32-byte text key.
+- The derived full native signing key length was `176`.
+- The derived full native signing key SHA-256 matched the runtime key hash read
+  from `libthing_security.so` global `0x3ab60`.
+- HMAC-SHA256 over the sample input `a=m.test||v=1.0` matched the native
+  `doCommandNative(command=1)` output observed with Frida.
 
 Brute-force/guess check against a captured accepted request:
 
@@ -612,8 +650,8 @@ Brute-force/guess check against a captured accepted request:
   `ttid`, concatenations of those fields, and the known certificate fingerprint
   did not reproduce the captured `sign`.
 - This confirms the final request key is not directly one of the visible
-  envelope fields. It must be obtained by reproducing command `0` key
-  derivation or dumping the initialized native string in-process.
+  envelope fields. It is obtained by reproducing command `0` key derivation
+  from package name, certificate digest, BMP-derived `secret2`, and app secret.
 - Runtime Frida verification on the connected Android device confirmed
   `match=true` for command `1`: native output matched HMAC-SHA256 recomputed
   from the initialized native key and the same canonical input. The key bytes
@@ -637,10 +675,10 @@ md5("result=" + result + "||t=" + t + "||" + aesKeyAsUtf8)
 7. Gunzip the plaintext if it is gzip-compressed.
 8. Decode as UTF-8 JSON.
 
-The remaining native dependencies for a fully standalone implementation are
-`getEncryptoKey(...)` and command `0` native signing-key derivation. Command `1`
-final request signing is now identified as HMAC-SHA256 once the native signing
-key is known.
+The remaining native dependency for a fully standalone implementation is
+`getEncryptoKey(...)` for request/response encryption keys. Command `0` native
+request signing-key derivation and command `1` final request signing are now
+reproduced outside the Android process.
 
 Tooling added in this repository:
 
@@ -653,9 +691,9 @@ Tooling added in this repository:
 - `tools/tuya_mobile_crypto.js`: reproduces Java-side sign input formatting,
   swapped `postData` MD5, final HMAC-SHA256 request signing when the native key
   is available, and AES-GCM response decryption when a request key is available.
-- `tools/tuya_mobile_crypto.py`: Python helper for Java-side sign input and
-  swapped `postData` MD5, plus final HMAC-SHA256 request signing when the native
-  key is available.
+- `tools/tuya_mobile_crypto.py`: Python helper for Java-side sign input,
+  swapped `postData` MD5, BMP `secret2` extraction, native signing-key
+  derivation, and final HMAC-SHA256 request signing.
 
 Plaintext confirmed with the Frida hook:
 
@@ -696,5 +734,5 @@ Open item:
 - `postData` and most accepted responses are still encrypted by the mobile SDK.
   The transport, accepted client identity, endpoint names, versions, and request
   envelope are now captured successfully. The remaining work for a clean
-  non-app implementation is reproducing or reusing SDK encryption/decryption and
-  command `0` native key derivation outside the patched Android process.
+  non-app implementation is reproducing or reusing `getEncryptoKey(...)` and
+  AES-GCM request/response encryption outside the patched Android process.
