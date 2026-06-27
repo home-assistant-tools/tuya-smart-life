@@ -803,6 +803,18 @@ device kind (`hub`, `child`, or `device`), parent id, IP, MAC, local key
 presence, and product id. Raw local keys and session secrets are redacted unless
 `--show-secrets` is explicitly supplied.
 
+Switch button/gang DPS:
+
+- `m.life.my.group.device.list` v2.2 and `thing.m.device.get` v4.1 both return
+  switch state in `dataPointInfo.dps`.
+- `dataPointInfo.dpName` is the expected per-DP label map, but it was empty for
+  all verified `Kiara` devices in the latest test.
+- The Home Assistant integration therefore treats boolean control DPS values as
+  switch buttons/gangs and falls back to `Button <dp_id>` when `dpName` has no
+  label.
+- Auxiliary boolean DPS fields such as indicator/backlight/countdown should not
+  be exposed as regular switch buttons when they can be identified.
+
 Open item:
 
 - `postData` and most accepted responses are still encrypted by the mobile SDK.

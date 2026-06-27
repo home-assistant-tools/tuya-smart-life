@@ -1,143 +1,140 @@
-# Tuya Smart Life API Notes
+# Tuya Smart Life Local
 
-This repository collects notes from reverse engineering the Android Tuya Smart app
-for Home Assistant and smart-home integration research.
+Custom integration cho Home Assistant để đăng nhập Smart Life/Tuya Smart bằng
+username và password, lấy danh sách thiết bị từ mobile API, sau đó điều khiển
+thiết bị trực tiếp trong LAN bằng local key.
 
-Current document:
+Integration này không cần tạo Tuya IoT Cloud project, không cần nhập `app_id`,
+`app_secret`, certificate fingerprint hay native signing key.
 
-- [Tuya Smart Android API findings](docs/tuya-smart-android-api-findings.md)
+## Tính năng
 
-The findings document now includes the required mobile API map for:
+- Đăng nhập bằng email/username và password của Smart Life/Tuya Smart.
+- Cho chọn một hoặc nhiều nhà khi cấu hình.
+- Lấy danh sách thiết bị, local key, hub/child topology, MAC/UUID và DPS ban đầu
+  từ Tuya mobile API.
+- Điều khiển local bằng TinyTuya qua IP LAN, không dùng cloud API để bật/tắt.
+- Theo dõi UDP broadcast và quét LAN định kỳ để cập nhật IP khi thiết bị đổi IP.
+- Tự loại bỏ IP public/WAN mà mobile API trả về, chỉ dùng IP local/private cho
+  lệnh local.
+- Tạo switch entity cho các nút/gang điều khiển lấy từ `dataPointInfo.dps`.
+  Nếu API trả tên trong `dataPointInfo.dpName` thì dùng tên đó; nếu không sẽ
+  fallback thành `Button <dp_id>`.
+- Tự dọn entity/device cũ khi bạn đổi danh sách nhà được chọn.
 
-- email/password login
-- home listing
-- device listing with hub/subdevice topology
-- local key, IP, and BLE identifier extraction
-- request signing and encrypted response decryption notes
+## Yêu cầu
 
-## HACS Custom Integration
+- Home Assistant đã cài HACS.
+- Home Assistant phải nằm cùng LAN với thiết bị muốn điều khiển local.
+- Tài khoản Smart Life/Tuya Smart đang quản lý các thiết bị đó.
+- Thiết bị cần có local key trong mobile API và mở được local Tuya protocol.
 
-This repository includes a Home Assistant custom integration at
-`custom_components/tuya_smart_life_local`. It logs in with the Smart Life /
-Tuya Smart mobile API, lets you select one or more homes, fetches devices and
-local keys for the selected homes, then controls supported devices locally.
+Lưu ý quan trọng: nếu một nhà trong Smart Life nằm ở LAN khác, Home Assistant
+không thể điều khiển local các thiết bị của nhà đó. Chỉ chọn các nhà mà HA có
+đường mạng trực tiếp tới thiết bị.
 
-### HACS installation
+## Cài Đặt Qua HACS
 
-1. In HACS, open **Integrations**.
-2. Click **... -> Custom repositories**.
-3. Add this repository URL and select category **Integration**:
-   ```bash
+1. Mở HACS trong Home Assistant.
+2. Vào **Integrations**.
+3. Bấm menu **...** góc phải, chọn **Custom repositories**.
+4. Nhập repository URL:
+
+   ```text
    https://github.com/home-assistant-tools/tuya-smart-life
    ```
-4. Install **Tuya Smart Life Local** and restart Home Assistant.
-5. Go to **Settings -> Devices & services -> Add integration** and search for
-   **Tuya Smart Life Local**.
 
-### Login and home selection
+5. Chọn category/type là **Integration**.
+6. Bấm **Add**.
+7. Tìm **Tuya Smart Life Local** trong HACS và bấm **Download**.
+8. Restart Home Assistant.
 
-The config flow asks only for the Tuya account email/username and password. The
-mobile app signing profile recovered from Smart Life 7.8.6 is bundled in the
-integration, so users do not need to provide app id, app secret, certificate
-fingerprint, BMP `secret2`, SDK version, or native signing key material.
+## Thiết Lập Integration
 
-After login succeeds, Home Assistant shows a multi-select list of Tuya homes.
-Choose one or more homes to sync. The selection can be changed later from the
-integration options.
+1. Vào **Settings -> Devices & services**.
+2. Bấm **Add integration**.
+3. Tìm **Tuya Smart Life Local**.
+4. Nhập username/email và password Smart Life/Tuya Smart.
+5. Sau khi login thành công, chọn nhà cần đồng bộ.
+6. Bấm submit và đợi HA tạo thiết bị/entity.
 
-### Local control behavior
+Sau khi đổi danh sách nhà trong options, restart hoặc reload integration để
+registry được dọn và load lại đúng thiết bị.
 
-- Device metadata, local keys, hub/child relationships, DPS values, MAC
-  addresses, BLE identifiers when Tuya exposes them, and cloud-provided IP
-  fields are fetched through the mobile API.
-- LAN control uses TinyTuya and Tuya protocol 3.3/3.4/3.5. Child devices are
-  addressed through the parent hub with the child's `node_id` / `cid` when
-  topology metadata is available.
-- The integration listens for Tuya UDP broadcasts on ports `6666`, `6667`,
-  `6699`, and `7000`, and also runs a periodic TinyTuya LAN scan. Broadcast and
-  scan results update the IP cache so local commands use the current LAN IP.
-- The first HACS version exposes boolean DPS values as Home Assistant switch
-  entities. The runtime keeps the richer metadata needed to add lights, covers,
-  sensors, locks, and fans later.
+## Cách Điều Khiển Local Hoạt Động
 
-## Capture Replay Tool
+Integration dùng cloud/mobile API chỉ cho phần metadata:
 
-The `tools/replay_tuya_capture_request.py` helper can replay a signed Tuya
-mobile API request from a local mitmproxy capture:
+- login
+- danh sách nhà
+- danh sách thiết bị
+- local key
+- hub/child relationship
+- DPS ban đầu
 
-```bash
-python3 tools/replay_tuya_capture_request.py /path/to/capture.mitm --list
-python3 tools/replay_tuya_capture_request.py /path/to/capture.mitm --api m.life.home.space.list
-python3 tools/replay_tuya_capture_request.py /path/to/capture.mitm --api m.life.app.smart.local.device.list
+Khi bạn bật/tắt một switch trong Home Assistant, lệnh đi theo đường local:
+
+```text
+Home Assistant -> IP LAN của thiết bị/hub -> TinyTuya -> Tuya local protocol
 ```
 
-This is a replay/debug tool. It reuses the captured signed envelope, session
-fields, and encrypted `postData`; it does not generate fresh Tuya signatures or
-decrypt encrypted `result` payloads yet.
+Với thiết bị con sau hub, lệnh được gửi qua hub cha bằng `parentDevId` và
+`node_id`/`cid` khi Tuya trả topology đầy đủ.
 
-## Standalone Login Tool
+## Nút Công Tắc Và DPS
 
-`tools/tuya_mobile_login.py` performs a fresh email/password login using the
-mobile API request signature. Keep credentials and extracted app material in
-environment variables rather than committing them:
+Tuya mô tả các nút/gang của công tắc bằng DPS:
 
-```bash
-export TUYA_EMAIL='user@example.com'
-export TUYA_PASSWORD='...'
-export TUYA_APP_ID='<client-id>'
-export TUYA_APP_SECRET='<app-secret>'
-export TUYA_CERT_SHA256='<apk-cert-sha256>'
-export TUYA_BMP='/path/to/t_s.bmp'
+- `dataPointInfo.dps`: giá trị hiện tại của từng DP.
+- `dataPointInfo.dpName`: tên từng DP nếu app/cloud có trả.
 
-python3 tools/tuya_mobile_login.py
-python3 tools/tuya_mobile_login.py --action homes
-python3 tools/tuya_mobile_login.py --action devices --home-id <home-id>
-python3 tools/tuya_mobile_login.py --action devices --json
-```
+Integration chỉ expose các DP boolean có khả năng là nút/gang điều khiển. Các
+DP phụ như indicator, backlight, countdown hoặc trạng thái phụ sẽ bị bỏ qua khi
+có thể nhận diện được. Với các thiết bị chưa trả `dpName`, entity sẽ có tên
+fallback như `Button 1`, `Button 2`.
 
-The script redacts session secrets by default. It uses plaintext `et=0` for the
-login, home-list, and direct device-list calls, while still applying the native
-mobile request signature. Device output includes hub/child classification,
-parent hub id, local key presence, IP, MAC, UUID, and product id. Use
-`--show-secrets` only when you intentionally want to print raw `sid`, `ecode`,
-tokens, and local keys.
+## Cập Nhật
 
-Some post-login APIs, especially encrypted batch wrappers, still require the SDK
-`et=3` AES-GCM request/response layer.
+HACS sẽ thấy các phiên bản GitHub release của repository này. Để cập nhật:
 
-## Mobile Crypto Helpers
+1. Mở HACS.
+2. Vào repository **Tuya Smart Life Local**.
+3. Bấm **Update information** nếu chưa thấy version mới.
+4. Bấm **Download/Redownload** version mới.
+5. Restart Home Assistant.
 
-`tools/tuya_mobile_crypto.js` implements the Java-side request signing input
-format, the swapped MD5 used for encrypted `postData`, and `et=3` response
-decryption when the per-request AES key is known:
+## Troubleshooting
 
-```bash
-node tools/tuya_mobile_crypto.js post-md5 '{"homeId":92258848}'
-node tools/tuya_mobile_crypto.js sign-input '{"a":"m.life.home.space.list","v":"1.0"}'
-node tools/tuya_mobile_crypto.js request-sign --native-key-hex <key> --input '<canonical-input>'
-node tools/tuya_mobile_crypto.js decrypt-response --key-hex <key> --response '<json>'
-```
+### Login báo `cannot_connect`
 
-`tools/tuya_mobile_crypto.py` also includes the native signing-key derivation
-for current Thing/Tuya SDK builds:
+- Kiểm tra email/password.
+- Kiểm tra internet của Home Assistant.
+- Nếu Smart Life yêu cầu xác thực phụ/MFA, login bằng script có thể chưa xử lý
+  được luồng đó.
 
-```bash
-python3 tools/tuya_mobile_crypto.py extract-bmp-key --app-id <client-id> --bmp /path/to/t_s.bmp
-python3 tools/tuya_mobile_crypto.py derive-native-key \
-  --package-name <android-package> \
-  --cert-sha256 <apk-cert-sha256> \
-  --app-id <client-id> \
-  --app-secret <app-secret> \
-  --bmp /path/to/t_s.bmp
-```
+### Entity unavailable hoặc không điều khiển được
 
-`tools/frida_tuya_network_crypto_dump.js` hooks the Android app to log native
-sign inputs/results, per-request encryption keys, encrypted request plaintext,
-and decrypted response plaintext.
+- Kiểm tra HA và thiết bị có cùng LAN không.
+- Nếu chạy HA trong Docker/TrueNAS, nên dùng network mode có thể nhận broadcast
+  LAN. Integration cần nghe UDP `6666`, `6667`, `6699`, `7000` và kết nối TCP
+  local tới thiết bị.
+- Nếu mobile API trả IP public/WAN, integration sẽ bỏ qua IP đó và chờ broadcast
+  hoặc LAN scan tìm IP private.
+- Một số thiết bị có thể trả local key/version không khớp; khi đó TinyTuya sẽ
+  báo lỗi kiểu `Check device key or version`.
 
-`tools/frida_tuya_sign_key_probe.js` verifies the native request-signing
-algorithm in-process. It checks that command `1` equals HMAC-SHA256 with the
-initialized native key and does not print the key bytes by default.
+### Chọn nhầm nhà ở LAN khác
 
-The APK and decompiled application sources are intentionally not committed here.
-Only the derived API notes are stored in this repository.
+Vào options của integration và bỏ nhà đó ra khỏi danh sách chọn. Integration sẽ
+dọn các entity/device cũ sau khi reload/restart.
+
+## Tài Liệu Kỹ Thuật
+
+README này dành cho cài đặt và sử dụng integration. Phần reverse engineering,
+MITM, API mobile, signing và crypto nằm trong tài liệu riêng:
+
+- [Reverse engineering and MITM notes](docs/reverse-engineering.md)
+- [Tuya Smart Android API findings](docs/tuya-smart-android-api-findings.md)
+
+APK và source decompile không được commit vào repository này; chỉ lưu lại notes,
+tooling và integration.

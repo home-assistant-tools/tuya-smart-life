@@ -19,6 +19,16 @@ _LOGGER = logging.getLogger(__name__)
 DISCOVERY_PORTS = (6666, 6667, 6699, 7000)
 DISCOVERY_SCAN_SECONDS = 8
 FORCE_SCAN_INTERVAL_SECONDS = 300
+SWITCH_BUTTON_DP_IDS = {str(dp_id) for dp_id in range(1, 9)}
+NON_BUTTON_NAME_PARTS = (
+    "backlight",
+    "child lock",
+    "countdown",
+    "do not disturb",
+    "indicator",
+    "led",
+    "relay status",
+)
 
 
 class _DiscoveryProtocol(asyncio.DatagramProtocol):
@@ -231,15 +241,23 @@ class TuyaLocalRuntime:
                 device.protocol_version,
             )
 
-    def boolean_dps(self) -> list[tuple[TuyaDeviceDescription, str, bool]]:
-        items: list[tuple[TuyaDeviceDescription, str, bool]] = []
+    def switch_button_dps(self) -> list[tuple[TuyaDeviceDescription, str, bool, str]]:
+        items: list[tuple[TuyaDeviceDescription, str, bool, str]] = []
         for device in self.devices.values():
-            if not device.local_controllable:
+            if not device.local_controllable or device.is_hub:
                 continue
             for dp_id, value in device.dps.items():
-                if isinstance(value, bool):
-                    items.append((device, dp_id, value))
+                if isinstance(value, bool) and _is_switch_button_dp(device, dp_id):
+                    items.append(
+                        (device, dp_id, value, _switch_button_label(device, dp_id))
+                    )
         return items
+
+    def boolean_dps(self) -> list[tuple[TuyaDeviceDescription, str, bool]]:
+        return [
+            (device, dp_id, value)
+            for device, dp_id, value, _ in self.switch_button_dps()
+        ]
 
     async def async_status(self, device: TuyaDeviceDescription) -> dict[str, Any]:
         return await self.hass.async_add_executor_job(self._status, device.dev_id)
@@ -377,6 +395,22 @@ def _protocol_version(value: str | None) -> float:
     except ValueError:
         _LOGGER.debug("Unknown Tuya protocol version %s, falling back to 3.3", value)
         return 3.3
+
+
+def _is_switch_button_dp(device: TuyaDeviceDescription, dp_id: str) -> bool:
+    name = device.dp_names.get(str(dp_id), "").strip().lower()
+    if name and any(part in name for part in NON_BUTTON_NAME_PARTS):
+        return False
+    if name:
+        return True
+    return str(dp_id) in SWITCH_BUTTON_DP_IDS
+
+
+def _switch_button_label(device: TuyaDeviceDescription, dp_id: str) -> str:
+    name = device.dp_names.get(str(dp_id), "").strip()
+    if name:
+        return name
+    return f"Button {dp_id}"
 
 
 def _tinytuya_scan_devices(

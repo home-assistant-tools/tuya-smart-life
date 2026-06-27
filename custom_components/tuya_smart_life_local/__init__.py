@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 
 from .config_flow import mobile_config_from_data
 from .const import DOMAIN, PLATFORMS
@@ -37,6 +39,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await local_runtime.async_stop()
         raise
 
+    _remove_stale_registry_entries(hass, entry, local_runtime)
+
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = TuyaSmartLifeRuntime(
         coordinator=coordinator,
         local=local_runtime,
@@ -60,3 +64,36 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _remove_stale_registry_entries(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    local_runtime: TuyaLocalRuntime,
+) -> None:
+    active_unique_ids = {
+        f"{device.dev_id}_{dp_id}"
+        for device, dp_id, _, _ in local_runtime.switch_button_dps()
+    }
+    entity_registry = er.async_get(hass)
+    for entity in list(entity_registry.entities.values()):
+        if entity.platform != DOMAIN or entity.config_entry_id != entry.entry_id:
+            continue
+        if entity.unique_id not in active_unique_ids:
+            entity_registry.async_remove(entity.entity_id)
+
+    active_device_ids = set(local_runtime.devices)
+    device_registry = dr.async_get(hass)
+    remove_device = getattr(device_registry, "async_remove_device", None)
+    if not callable(remove_device):
+        return
+    for device in list(device_registry.devices.values()):
+        if entry.entry_id not in device.config_entries:
+            continue
+        tuya_ids = {
+            identifier
+            for domain, identifier in device.identifiers
+            if domain == DOMAIN
+        }
+        if tuya_ids and tuya_ids.isdisjoint(active_device_ids):
+            remove_device(device.id)
