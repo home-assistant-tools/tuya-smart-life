@@ -313,10 +313,93 @@ Live API names observed during launch, privacy acceptance, and guest flow:
 | `smartlife.m.miniprogram.kit.whitelist.query` | `1.0` |
 | `smartlife.m.user.guest.register` | `1.0` |
 
+## Accepted Client Identity Capture
+
+The `ILLEGAL_CLIENT_ID` blocker was traced to native request signing in
+`libthing_security.so`. Static Java-side signature patches were not enough:
+the native `ThingNetworkSecurity.doCommandNative(context, 0, appSecret,
+appId, ...)` initialization path still read the re-signed APK certificate and
+derived the wrong channel key/signature state.
+
+Successful runtime patch:
+
+- Injected Frida Gadget into the patched base APK.
+- Hooked native `libthing_security.so` helper at offset `0x16f88`, which builds
+  the certificate fingerprint string used by the native signing state.
+- Forced that helper to return the original Tuya certificate SHA-256:
+  `93:21:9F:C2:73:E2:20:0F:4A:DE:E5:F7:19:1D:C6:56:BA:2A:2D:7B:2F:F5:D2:4C:D5:5C:4B:61:55:00:1E:40`.
+- Also hooked Java `PackageManager.getPackageInfo(...)` to return an
+  `android.content.pm.Signature` built from the original Tuya X.509 cert bytes.
+
+Observed effect:
+
+- Before native spoof: `chKey=4d2696db`, all business calls returned
+  `ILLEGAL_CLIENT_ID`.
+- After native spoof: `chKey=3f7060ea`, `smartlife.m.user.guest.register`
+  returned encrypted `result` payload instead of `ILLEGAL_CLIENT_ID`.
+- After guest registration the app switched region/domain from
+  `a1.tuyaus.com` to `a1-sg.iotbing.com`.
+
+Successful capture:
+
+- Capture file in the reverse-engineering workspace:
+  `mitm/tuya-20260627-083438-mitm19-native-spoof-fixed3.mitm`.
+- Patched base used for this run:
+  `build/signed/com.tuya.smart.mitm15.gadget.base.apk`.
+- Split used for this run:
+  `build/signed/split_config.arm64_v8a.mitm11killfunc.apk`.
+- The capture used guest registration only. No user account login was needed.
+
+Additional live API names observed after accepted guest registration:
+
+| API name | Notes |
+| --- | --- |
+| `m.life.home.space.list` | Home/space list, observed repeatedly after guest session setup. |
+| `smartlife.m.api.batch.invoke` | Batch wrapper used for post-login/home data refresh. |
+| `m.life.app.smart.local.device.list` | Local device discovery/list request. |
+| `m.energy.home.device.list` | Energy/home device list request. |
+| `smartlife.m.device.ref.info.list` | Device reference info enrichment. |
+| `smartlife.m.device.sig.mesh.list` | SIG mesh list. |
+| `smartlife.m.device.sig.mesh.create` | SIG mesh create/init path during guest setup. |
+| `m.thing.ble.mesh.create` | BLE mesh create/init path. |
+| `smartlife.m.device.allow.maxNum` | Device count/limit metadata. |
+| `smartlife.m.device.latest.product.warn.info` | Device/product warning metadata. |
+| `m.life.app.home.device.hide.list` | Hidden-device list for home page. |
+| `m.life.app.home.page.card.list` | Home page card/device presentation data. |
+| `m.life.app.homepage.card.init.sync` | Home page card initialization sync. |
+| `m.life.app.smart.smart.get.card.info` | Smart card data for app home. |
+| `smartlife.m.location.add_default` | Default location/home setup. |
+| `smartlife.m.location.extend.list` | Extended location/home metadata. |
+| `smartlife.m.user.info.get` | Current guest user profile. |
+| `smartlife.m.user.properties.get` | User property bag. |
+| `smartlife.m.token.get` | Session/token refresh path. |
+
+Current practical read API map:
+
+1. Login/guest setup:
+   - `smartlife.m.user.guest.register` v1.0 for guest mode.
+   - Static account-login findings above still point to
+     `thing.m.user.username.token.get`, `thing.m.user.email.password.login`,
+     and `thing.m.user.mobile.passwd.login` for real account login.
+2. List homes:
+   - `m.life.home.space.list`.
+3. Refresh/list home devices:
+   - `smartlife.m.api.batch.invoke`, with nested home/device APIs identified
+     statically such as `m.life.my.group.device.list`,
+     `m.life.my.group.device.group.list`,
+     `m.life.my.group.device.relation.list`,
+     `thing.m.my.shared.device.list`, and
+     `thing.m.my.shared.device.group.list`.
+4. Local/enrichment/device metadata:
+   - `m.life.app.smart.local.device.list`
+   - `m.energy.home.device.list`
+   - `smartlife.m.device.ref.info.list`
+   - `smartlife.m.device.sig.mesh.list`
+
 Open item:
 
-- Static API names and versions above remain the current reliable source for
-  successful login, home list, and device list behavior. A fully accepted client
-  identity, or a patch that preserves Tuya's expected client/signature state
-  while still allowing MITM, is needed to capture successful authenticated
-  responses from the live app.
+- `postData` and most accepted responses are still encrypted by the mobile SDK.
+  The transport, accepted client identity, endpoint names, versions, and request
+  envelope are now captured successfully. The remaining work for a clean
+  non-app implementation is reproducing or reusing SDK encryption/decryption
+  and native signing outside the patched Android process.
