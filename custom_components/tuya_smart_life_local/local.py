@@ -103,6 +103,7 @@ class TuyaLocalRuntime:
         self._state_stream_tasks: dict[str, asyncio.Task[None]] = {}
         self._state_callbacks: list[Callable[[str, dict[str, Any]], None]] = []
         self._last_heartbeat: dict[str, float] = {}
+        self._stream_synced: set[str] = set()
         self._last_force_scan = 0.0
 
     async def async_start(self) -> None:
@@ -161,6 +162,7 @@ class TuyaLocalRuntime:
         self._tinytuya_devices.clear()
         self._stream_tinytuya_devices.clear()
         self._last_heartbeat.clear()
+        self._stream_synced.clear()
 
     async def _scan_loop(self) -> None:
         while True:
@@ -273,6 +275,7 @@ class TuyaLocalRuntime:
                 self._state_stream_tasks.pop(dev_id, None)
                 _close_tinytuya_device(self._stream_tinytuya_devices.pop(dev_id, None))
                 self._last_heartbeat.pop(dev_id, None)
+                self._stream_synced.discard(dev_id)
 
         for dev_id in desired:
             task = self._state_stream_tasks.get(dev_id)
@@ -301,11 +304,11 @@ class TuyaLocalRuntime:
     async def _state_stream_loop(self, dev_id: str) -> None:
         while dev_id in self.devices:
             try:
-                payload = await self.hass.async_add_executor_job(
+                payloads = await self.hass.async_add_executor_job(
                     self._receive_state_stream,
                     dev_id,
                 )
-                if payload:
+                for payload in payloads:
                     self._handle_state_stream_payload(dev_id, payload)
             except asyncio.CancelledError:
                 raise
@@ -318,12 +321,18 @@ class TuyaLocalRuntime:
                 )
                 _close_tinytuya_device(self._stream_tinytuya_devices.pop(dev_id, None))
                 self._last_heartbeat.pop(dev_id, None)
+                self._stream_synced.discard(dev_id)
                 await asyncio.sleep(STATE_STREAM_RECONNECT_SECONDS)
 
-    def _receive_state_stream(self, dev_id: str) -> dict[str, Any] | None:
+    def _receive_state_stream(self, dev_id: str) -> list[dict[str, Any]]:
         device = self._stream_tinytuya_device(dev_id)
         if not device:
-            return None
+            return []
+
+        payloads: list[dict[str, Any]] = []
+        if dev_id not in self._stream_synced:
+            self._stream_synced.add(dev_id)
+            payloads.extend(self._sync_state_stream(dev_id, device))
 
         now = time.monotonic()
         if now - self._last_heartbeat.get(dev_id, 0.0) >= STATE_STREAM_HEARTBEAT_SECONDS:
@@ -337,7 +346,63 @@ class TuyaLocalRuntime:
                 _LOGGER.debug("Unable to send Tuya stream heartbeat for %s", dev_id)
 
         payload = device.receive()
-        return payload if isinstance(payload, dict) else None
+        if isinstance(payload, dict):
+            payloads.append(payload)
+        return payloads
+
+    def _sync_state_stream(self, dev_id: str, stream_device: Any) -> list[dict[str, Any]]:
+        """Prime a persistent Tuya LAN stream with one DPS query per endpoint."""
+        try:
+            import tinytuya
+        except ImportError:
+            return []
+
+        root = self.devices.get(dev_id)
+        if not root or not root.ip or not root.local_key:
+            return []
+
+        payloads: list[dict[str, Any]] = []
+        endpoints = [root] if (not root.is_hub or root.dps) else []
+        endpoints.extend(
+            child
+            for child in self.devices.values()
+            if child.parent_dev_id == dev_id and child.node_id
+        )
+
+        for endpoint in endpoints:
+            if endpoint.dev_id == dev_id:
+                tuya_device = stream_device
+            else:
+                tuya_device = self._make_tinytuya_device(
+                    tinytuya,
+                    endpoint,
+                    root.ip,
+                    root.local_key,
+                    stream_device,
+                    persistent=True,
+                )
+            try:
+                response = tuya_device.status()
+            except Exception:
+                _LOGGER.debug(
+                    "Unable to sync Tuya state stream for %s via %s",
+                    endpoint.dev_id,
+                    dev_id,
+                    exc_info=True,
+                )
+                continue
+            if isinstance(response, dict):
+                if endpoint.dev_id != dev_id and endpoint.node_id:
+                    response.setdefault("cid", endpoint.node_id)
+                payloads.append(response)
+
+        _LOGGER.debug(
+            "Synced Tuya state stream for %s endpoints=%s payloads=%s",
+            dev_id,
+            len(endpoints),
+            len(payloads),
+        )
+        return payloads
 
     def _handle_state_stream_payload(
         self,
@@ -744,6 +809,12 @@ class TuyaLocalRuntime:
             device.local_key,
             None,
             persistent=True,
+        )
+        _LOGGER.debug(
+            "Opening Tuya state stream for %s ip=%s version=%s",
+            dev_id,
+            device.ip,
+            device.protocol_version,
         )
         self._stream_tinytuya_devices[dev_id] = tinytuya_device
         return tinytuya_device
