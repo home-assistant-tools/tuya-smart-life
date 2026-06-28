@@ -7,6 +7,7 @@ import json
 import logging
 import socket
 import time
+import unicodedata
 from collections.abc import Callable
 from typing import Any
 
@@ -1304,12 +1305,17 @@ def _is_fan_device(device: TuyaDeviceDescription) -> bool:
     product_id = (device.product_id or "").strip().lower()
     if product_id in FAN_PRODUCT_IDS:
         return True
-    name = device.name.strip().lower()
-    if ("fan" in name or "quạt" in name) and isinstance(
+    name = _ascii_fold(device.name).strip().lower()
+    if ("fan" in name or "quat" in name) and isinstance(
         device.dps.get(FAN_POWER_DP_ID), bool
     ):
         return True
     return False
+
+
+def _ascii_fold(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return normalized.encode("ascii", "ignore").decode("ascii")
 
 
 def _is_switch_button_dp(device: TuyaDeviceDescription, dp_id: str) -> bool:

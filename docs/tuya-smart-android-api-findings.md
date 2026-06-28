@@ -517,10 +517,10 @@ Runtime result:
 - Login succeeded for a real account through the app UI.
 - The app loaded the Home tab after login.
 - Current home shown in the UI: `Kiara`.
-- Room tabs visible in the UI included `Favorites`, `Phòng khách`, and
+- Room tabs visible in the UI included `Favorites`, `Living Room`, and
   `Master`.
-- Device cards visible in `Phòng khách` included:
-  - `backend`, switch type (`Công tắc`), status off (`Tắt`), function `RESET`.
+- Device cards visible in `Living Room` included:
+  - `backend`, switch type (`Switch`), status off (`Off`), function `RESET`.
   - `cks`, function `RESET`.
 
 Live account-login API sequence observed:
@@ -699,10 +699,11 @@ Tooling added in this repository:
 Plaintext confirmed with the Frida hook:
 
 - `smartlife.m.api.batch.invoke` returned room data for home `92258848`:
-  `Phòng khách`, `Master`, `Liên`, `Đang`, `WC`, and `Bếp`.
+  `Living Room`, `Master`, `Lien`, `Dang`, `WC`, and `Kitchen`.
 - `m.energy.home.device.list` v3.0 returned these device names:
-  `cks`, `backend`, `rọi giường master 2`, `rọi giường master 1`,
-  `rọi gương master`, `rọi tab master`, and `hành lang`.
+  `cks`, `backend`, `master bedside spotlight 2`,
+  `master bedside spotlight 1`, `master mirror spotlight`,
+  `master tab spotlight`, and `hallway`.
 - `m.life.app.home.page.card.list` v2.9 returned home card entries for
   `backend` and `cks`.
 
@@ -781,7 +782,7 @@ Standalone home and device calls after login:
   envelope includes the fresh `sid` from login. It was verified to return two
   homes for the test account:
   - `Kiara`, `homeId=92258848`
-  - `Thành Nga Home`, `homeId=69887204`
+  - `Thanh Nga Home`, `homeId=69887204`
 - `m.life.my.group.device.list` v2.2 accepts plaintext `et=0` with
   `{"gid": <homeId>}`. The response contains the primary device records,
   including `devId`, `name`, `productId`, `uuid`, `mac`, `ip`, `localKey`,
@@ -811,7 +812,7 @@ Hub/child topology in the direct device list:
   type `8`.
 - Example verified topology: `Zemismart M6 Hub`
   (`devId=ebc7e92b567f41ca98j9hh`) is the parent hub for child devices
-  `Nhà tổ` and `Nhà xe cũ`.
+  `Main House` and `Old Garage`.
 - Child records may have an empty `localKey`; use the parent hub relationship
   when local control needs the hub context.
 
@@ -832,7 +833,7 @@ Switch button/gang DPS:
 - Auxiliary boolean DPS fields such as indicator/backlight/countdown should not
   be exposed as regular switch buttons when they can be identified.
 - Fan devices can use the same boolean DPS shape for power. The observed
-  `Quạt bếp` device (`productId=tqfl5ws2csdtdaak`) reports DP `1` as fan power,
+  `Kitchen Fan` device (`productId=tqfl5ws2csdtdaak`) reports DP `1` as fan power,
   DP `3` as speed, and DP `9` as a light. The integration maps DP `1`/`3` to a
   `fan` entity and keeps DP `9` as a separate switch.
 
