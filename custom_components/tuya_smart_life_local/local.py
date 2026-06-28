@@ -748,12 +748,73 @@ class TuyaLocalRuntime:
         return device.status()
 
     def _set_dp(self, dev_id: str, dp_id: int, value: Any) -> Any:
+        try:
+            stream_response = self._set_dp_via_state_stream(dev_id, dp_id, value)
+        except Exception:
+            _LOGGER.debug(
+                "Unable to send Tuya DP %s for %s via state stream",
+                dp_id,
+                dev_id,
+                exc_info=True,
+            )
+            stream_response = NO_FALLBACK_RESPONSE
+            self._release_state_stream_for_command(dev_id)
+        if stream_response is not NO_FALLBACK_RESPONSE:
+            return stream_response
+        self._release_state_stream_for_command(dev_id)
         response = self._set_dp_once(dev_id, dp_id, value)
         if _is_key_or_version_error(response):
             fallback = self._try_child_protocol_fallback(dev_id, dp_id, value)
             if fallback is not NO_FALLBACK_RESPONSE:
                 return fallback
         return response
+
+    def _set_dp_via_state_stream(self, dev_id: str, dp_id: int, value: Any) -> Any:
+        stream_dev_id = self._command_stream_device_id(dev_id)
+        if not stream_dev_id:
+            return NO_FALLBACK_RESPONSE
+        stream_device = self._stream_tinytuya_devices.get(stream_dev_id)
+        if not stream_device:
+            return NO_FALLBACK_RESPONSE
+
+        target = self.devices.get(dev_id)
+        parent = self.devices.get(stream_dev_id)
+        if not target or not parent or not parent.ip or not parent.local_key:
+            return NO_FALLBACK_RESPONSE
+
+        if target.dev_id == stream_dev_id:
+            tuya_device = stream_device
+        else:
+            try:
+                import tinytuya
+            except ImportError:
+                return NO_FALLBACK_RESPONSE
+            tuya_device = self._make_tinytuya_device(
+                tinytuya,
+                target,
+                parent.ip,
+                parent.local_key,
+                stream_device,
+                persistent=True,
+            )
+
+        _LOGGER.debug(
+            "Sending Tuya DP %s for %s via state stream %s",
+            dp_id,
+            dev_id,
+            stream_dev_id,
+        )
+        if hasattr(tuya_device, "set_value"):
+            return _call_tinytuya_writer(
+                tuya_device.set_value,
+                dp_id,
+                value,
+                nowait=True,
+            )
+        try:
+            return tuya_device.set_status(value, switch=dp_id, nowait=True)
+        except TypeError:
+            return tuya_device.set_status(value, switch=dp_id)
 
     def _set_dp_once(self, dev_id: str, dp_id: int, value: Any) -> Any:
         device = self._tinytuya_device(dev_id)
@@ -772,6 +833,7 @@ class TuyaLocalRuntime:
         hub = self.devices.get(action.hub_dev_id)
         if not hub:
             raise RuntimeError(f"IR hub {action.hub_dev_id} is no longer available")
+        self._release_state_stream_for_command(hub.dev_id)
         response = self._publish_ir_dps_once(action)
         if _is_key_or_version_error(response):
             self._tinytuya_devices.pop(hub.dev_id, None)
@@ -860,6 +922,33 @@ class TuyaLocalRuntime:
         self._tinytuya_devices.pop(parent.dev_id, None)
         self._tinytuya_devices.pop(device.dev_id, None)
         return last_response
+
+    def _release_state_stream_for_command(self, dev_id: str) -> None:
+        stream_dev_id = self._command_stream_device_id(dev_id)
+        if not stream_dev_id:
+            return
+        stream_device = self._stream_tinytuya_devices.pop(stream_dev_id, None)
+        if not stream_device:
+            return
+        _LOGGER.debug(
+            "Closing Tuya state stream %s before command for %s",
+            stream_dev_id,
+            dev_id,
+        )
+        _close_tinytuya_device(stream_device)
+        time.sleep(1.0)
+        self._last_heartbeat.pop(stream_dev_id, None)
+        self._stream_synced.discard(stream_dev_id)
+        self._tinytuya_devices.pop(stream_dev_id, None)
+        for device in self.devices.values():
+            if device.parent_dev_id == stream_dev_id:
+                self._tinytuya_devices.pop(device.dev_id, None)
+
+    def _command_stream_device_id(self, dev_id: str) -> str | None:
+        device = self.devices.get(dev_id)
+        if not device:
+            return None
+        return device.parent_dev_id if device.is_child else device.dev_id
 
     def _tinytuya_device(self, dev_id: str) -> Any:
         existing = self._tinytuya_devices.get(dev_id)

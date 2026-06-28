@@ -16,7 +16,9 @@ Integration này không cần tạo Tuya IoT Cloud project, không cần nhập 
 - Điều khiển local bằng TinyTuya qua IP LAN, không dùng cloud API để bật/tắt.
 - Giữ kết nối TCP local tới thiết bị/hub để nhận DPS update realtime. Stream sẽ
   tự khởi động khi UDP broadcast/scan tìm được IP LAN, sau đó refresh/sync một
-  lần rồi nghe push DPS, không poll trạng thái local định kỳ.
+  lần rồi nghe push DPS. Lệnh điều khiển cũng ưu tiên gửi qua socket stream này
+  để tránh thiết bị từ chối kết nối LAN thứ hai; integration không poll trạng
+  thái local định kỳ.
 - Theo dõi UDP broadcast và quét LAN định kỳ để cập nhật IP/protocol version khi
   thiết bị hoặc hub đổi thông tin LAN.
 - Tự loại bỏ IP public/WAN mà mobile API trả về, chỉ dùng IP local/private cho
@@ -80,7 +82,7 @@ nhập `09...`, integration cũng sẽ thử biến thể `9...` vì mobile API 
 code riêng.
 
 Sau khi đổi danh sách nhà trong options, integration sẽ reload để registry được
-dọn và load lại đúng thiết bị. Nếu đang dùng bản cũ hơn `0.1.31`, hãy reload
+dọn và load lại đúng thiết bị. Nếu đang dùng bản cũ hơn `0.1.32`, hãy reload
 hoặc restart Home Assistant sau khi cập nhật.
 
 ## Cách Điều Khiển Local Hoạt Động
