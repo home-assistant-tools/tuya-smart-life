@@ -17,7 +17,8 @@ from .models import TuyaDeviceDescription
 
 _LOGGER = logging.getLogger(__name__)
 
-SPEED_COUNT = 3
+SPEED_COUNT = 5
+PERCENTAGE_STEP = round(100 / SPEED_COUNT)
 
 
 async def async_setup_entry(
@@ -35,7 +36,12 @@ async def async_setup_entry(
 class TuyaDpsFan(CoordinatorEntity[TuyaSmartLifeCoordinator], FanEntity):
     _attr_has_entity_name = True
     _attr_name = None
-    _attr_supported_features = FanEntityFeature.SET_SPEED
+    _attr_percentage_step = PERCENTAGE_STEP
+    _attr_supported_features = (
+        FanEntityFeature.SET_SPEED
+        | getattr(FanEntityFeature, "TURN_ON", FanEntityFeature(0))
+        | getattr(FanEntityFeature, "TURN_OFF", FanEntityFeature(0))
+    )
 
     def __init__(
         self,
