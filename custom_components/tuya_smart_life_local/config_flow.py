@@ -75,7 +75,7 @@ def homes_schema(
     homes: list[TuyaHome],
     selected: list[str] | None = None,
 ) -> vol.Schema:
-    default = selected or [home.id for home in homes]
+    default = [home.id for home in homes] if selected is None else selected
     return vol.Schema(
         {
             vol.Required(CONF_SELECTED_HOME_IDS, default=default): (
@@ -92,6 +92,15 @@ def homes_schema(
             )
         }
     )
+
+
+def selected_home_ids_from_user_input(user_input: dict[str, Any]) -> list[str]:
+    value = user_input.get(CONF_SELECTED_HOME_IDS, [])
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return [str(home_id) for home_id in value]
 
 
 class TuyaSmartLifeLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -144,16 +153,13 @@ class TuyaSmartLifeLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            selected = [str(home_id) for home_id in user_input[CONF_SELECTED_HOME_IDS]]
-            if not selected:
-                errors["base"] = "no_home_selected"
-            else:
-                data = dict(self._user_data)
-                data[CONF_SELECTED_HOME_IDS] = selected
-                return self.async_create_entry(
-                    title=f"Tuya Smart Life Local ({self._user_data[CONF_EMAIL]})",
-                    data=data,
-                )
+            selected = selected_home_ids_from_user_input(user_input)
+            data = dict(self._user_data)
+            data[CONF_SELECTED_HOME_IDS] = selected
+            return self.async_create_entry(
+                title=f"Tuya Smart Life Local ({self._user_data[CONF_EMAIL]})",
+                data=data,
+            )
 
         return self.async_show_form(
             step_id="select_homes",
@@ -204,14 +210,11 @@ class TuyaSmartLifeLocalOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
         data = {**self.config_entry.data, **self.config_entry.options}
         if user_input is not None:
-            selected = [str(home_id) for home_id in user_input[CONF_SELECTED_HOME_IDS]]
-            if not selected:
-                errors["base"] = "no_home_selected"
-            else:
-                return self.async_create_entry(
-                    title="",
-                    data={CONF_SELECTED_HOME_IDS: selected},
-                )
+            selected = selected_home_ids_from_user_input(user_input)
+            return self.async_create_entry(
+                title="",
+                data={CONF_SELECTED_HOME_IDS: selected},
+            )
 
         try:
             config = mobile_config_from_data(data)
