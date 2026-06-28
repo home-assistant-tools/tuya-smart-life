@@ -92,7 +92,6 @@ SIGN_KEYS = {
     "et",
     "n4h5",
     "sid",
-    "gid",
     "chKey",
     "sp",
 }
