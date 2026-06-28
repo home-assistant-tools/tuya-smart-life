@@ -20,6 +20,7 @@ from .models import (
     TuyaMobileConfig,
     TuyaSession,
     device_from_raw,
+    device_home_id_from_raw,
     device_parent_id,
     home_id_from_raw,
 )
@@ -91,6 +92,7 @@ SIGN_KEYS = {
     "et",
     "n4h5",
     "sid",
+    "gid",
     "chKey",
     "sp",
 }
@@ -428,23 +430,55 @@ class TuyaSmartLifeMobileApi:
         session: TuyaSession,
         home: TuyaHome,
     ) -> list[TuyaDeviceDescription]:
-        _, response = self.request(*OWNED_DEVICE_API, {"gid": home.id}, sid=session.sid)
+        _, response = self.request(
+            *OWNED_DEVICE_API,
+            {"gid": home.id},
+            sid=session.sid,
+            extra={"gid": home.id},
+        )
         self._raise_for_response(response, f"device list for {home.name}")
         raw_devices = response.get("result") or []
         if not isinstance(raw_devices, list):
             return []
 
+        matching_devices = [
+            device
+            for device in raw_devices
+            if isinstance(device, dict)
+            and device.get("devId")
+            and (
+                (device_home_id := device_home_id_from_raw(device)) is None
+                or device_home_id == home.id
+            )
+        ]
+        skipped_count = len(
+            [
+                device
+                for device in raw_devices
+                if isinstance(device, dict)
+                and device.get("devId")
+                and (device_home_id := device_home_id_from_raw(device)) is not None
+                and device_home_id != home.id
+            ]
+        )
+        if skipped_count:
+            _LOGGER.debug(
+                "Filtered %s Tuya devices outside selected home %s from %s raw records",
+                skipped_count,
+                home.id,
+                len(raw_devices),
+            )
+
         parent_ids = {
             parent_id
-            for device in raw_devices
+            for device in matching_devices
             if isinstance(device, dict)
             for parent_id in [device_parent_id(device)]
             if parent_id
         }
         return [
             device_from_raw(device, home, parent_ids)
-            for device in raw_devices
-            if isinstance(device, dict) and device.get("devId")
+            for device in matching_devices
         ]
 
     def list_action_device_ids(
@@ -459,6 +493,7 @@ class TuyaSmartLifeMobileApi:
                 version,
                 {"gid": home.id, "sourceType": "action"},
                 sid=session.sid,
+                extra={"gid": home.id},
             )
             if response.get("success"):
                 result = response.get("result")
@@ -494,6 +529,7 @@ class TuyaSmartLifeMobileApi:
                 *ACTION_FUNCTION_API,
                 payload,
                 sid=session.sid,
+                extra={"gid": home.id},
             )
             if response.get("success"):
                 result = response.get("result")

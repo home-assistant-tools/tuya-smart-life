@@ -115,6 +115,27 @@ def home_id_from_raw(raw: dict[str, Any]) -> str:
     return str(raw.get("homeId") or raw.get("gid") or raw.get("id"))
 
 
+def device_home_id_from_raw(raw: dict[str, Any]) -> str | None:
+    for key in ("homeId", "gid", "groupId", "home_id", "group_id"):
+        value = raw.get(key)
+        if value not in (None, ""):
+            return str(value)
+
+    home = raw.get("home")
+    if isinstance(home, dict):
+        value = home.get("homeId") or home.get("gid") or home.get("id")
+        if value not in (None, ""):
+            return str(value)
+
+    group = raw.get("group")
+    if isinstance(group, dict):
+        value = group.get("groupId") or group.get("gid") or group.get("id")
+        if value not in (None, ""):
+            return str(value)
+
+    return None
+
+
 def device_parent_id(raw: dict[str, Any]) -> str | None:
     topo = raw.get("deviceTopo")
     if isinstance(topo, dict):
