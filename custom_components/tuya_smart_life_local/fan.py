@@ -36,6 +36,7 @@ async def async_setup_entry(
 class TuyaDpsFan(CoordinatorEntity[TuyaSmartLifeCoordinator], FanEntity):
     _attr_has_entity_name = True
     _attr_name = None
+    _attr_should_poll = False
     _attr_percentage_step = PERCENTAGE_STEP
     _attr_supported_features = (
         FanEntityFeature.SET_SPEED
@@ -97,9 +98,22 @@ class TuyaDpsFan(CoordinatorEntity[TuyaSmartLifeCoordinator], FanEntity):
     def _handle_dps_update(self, dev_id: str, dps: dict[str, Any]) -> None:
         if dev_id != self.device.dev_id:
             return
+        _LOGGER.debug(
+            "Tuya fan DPS update entity=%s device=%s dps=%s",
+            self.entity_id,
+            dev_id,
+            dps,
+        )
         if FAN_POWER_DP_ID in dps or FAN_SPEED_DP_ID in dps:
             self._local_ok = True
             self.async_write_ha_state()
+        else:
+            _LOGGER.debug(
+                "Tuya fan ignored DPS update entity=%s device=%s dps=%s",
+                self.entity_id,
+                dev_id,
+                dps,
+            )
 
     @property
     def is_on(self) -> bool | None:
@@ -163,45 +177,9 @@ class TuyaDpsFan(CoordinatorEntity[TuyaSmartLifeCoordinator], FanEntity):
         device.dps[str(dp_id)] = value
         self.async_write_ha_state()
 
-    async def async_update(self) -> None:
-        if not self.available:
-            return
-        device = self.current_device
-        if not device:
-            return
-        try:
-            response = await self.runtime.local.async_status(device)
-        except Exception as err:
-            self._local_ok = False
-            self._async_write_state_if_added()
-            _LOGGER.debug("Unable to update Tuya fan status for %s: %s", device.dev_id, err)
-            return
-        dps = _dps_from_status(response)
-        if not dps:
-            if isinstance(response, dict) and response.get("Error"):
-                self._local_ok = False
-                self._async_write_state_if_added()
-            return
-        self._local_ok = True
-        for dp_id in (FAN_POWER_DP_ID, FAN_SPEED_DP_ID):
-            value = dps.get(dp_id)
-            if value is None and dp_id.isdecimal():
-                value = dps.get(int(dp_id))
-            if value is not None:
-                device.dps[dp_id] = value
-
     def _async_write_state_if_added(self) -> None:
         if self.entity_id:
             self.async_write_ha_state()
-
-
-def _dps_from_status(response: Any) -> dict[Any, Any] | None:
-    if not isinstance(response, dict):
-        return None
-    dps = response.get("dps")
-    if not isinstance(dps, dict) and isinstance(response.get("data"), dict):
-        dps = response["data"].get("dps")
-    return dps if isinstance(dps, dict) else None
 
 
 def _speed_to_percentage(value: Any) -> int | None:

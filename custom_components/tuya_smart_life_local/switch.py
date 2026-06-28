@@ -36,6 +36,7 @@ async def async_setup_entry(
 
 class TuyaDpsSwitch(CoordinatorEntity[TuyaSmartLifeCoordinator], SwitchEntity):
     _attr_has_entity_name = True
+    _attr_should_poll = False
 
     def __init__(
         self,
@@ -101,11 +102,26 @@ class TuyaDpsSwitch(CoordinatorEntity[TuyaSmartLifeCoordinator], SwitchEntity):
     def _handle_dps_update(self, dev_id: str, dps: dict[str, Any]) -> None:
         if dev_id != self.device.dev_id:
             return
+        _LOGGER.debug(
+            "Tuya switch DPS update entity=%s device=%s dp=%s dps=%s",
+            self.entity_id,
+            dev_id,
+            self.dp_id,
+            dps,
+        )
         value = dps.get(self.dp_id)
         if isinstance(value, bool):
             self._local_ok = True
             self._state = value
             self.async_write_ha_state()
+        else:
+            _LOGGER.debug(
+                "Tuya switch ignored DPS update entity=%s device=%s dp=%s value=%r",
+                self.entity_id,
+                dev_id,
+                self.dp_id,
+                value,
+            )
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self._async_set(True)
@@ -129,38 +145,6 @@ class TuyaDpsSwitch(CoordinatorEntity[TuyaSmartLifeCoordinator], SwitchEntity):
         self._state = value
         device.dps[self.dp_id] = value
         self.async_write_ha_state()
-
-    async def async_update(self) -> None:
-        if not self.available:
-            return
-        device = self.current_device
-        if not device:
-            return
-        try:
-            response = await self.runtime.local.async_status(device)
-        except Exception as err:
-            self._local_ok = False
-            self._async_write_state_if_added()
-            _LOGGER.debug("Unable to update Tuya status for %s: %s", device.dev_id, err)
-            return
-        if not isinstance(response, dict):
-            return
-        dps = response.get("dps")
-        if not isinstance(dps, dict) and isinstance(response.get("data"), dict):
-            dps = response["data"].get("dps")
-        if not isinstance(dps, dict):
-            if response.get("Error"):
-                self._local_ok = False
-                self._async_write_state_if_added()
-            return
-        self._local_ok = True
-        value = dps.get(self.dp_id)
-        if value is None and self.dp_id.isdecimal():
-            value = dps.get(int(self.dp_id))
-        if value is not None:
-            if isinstance(value, bool):
-                self._state = value
-                device.dps[self.dp_id] = value
 
     def _async_write_state_if_added(self) -> None:
         if self.entity_id:

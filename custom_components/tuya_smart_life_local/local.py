@@ -272,6 +272,7 @@ class TuyaLocalRuntime:
 
         for dev_id, task in list(self._state_stream_tasks.items()):
             if dev_id not in desired:
+                _LOGGER.debug("Stopping Tuya state stream task for %s", dev_id)
                 task.cancel()
                 self._state_stream_tasks.pop(dev_id, None)
                 _close_tinytuya_device(self._stream_tinytuya_devices.pop(dev_id, None))
@@ -282,6 +283,7 @@ class TuyaLocalRuntime:
             task = self._state_stream_tasks.get(dev_id)
             if task and not task.done():
                 continue
+            _LOGGER.debug("Starting Tuya state stream task for %s", dev_id)
             self._state_stream_tasks[dev_id] = self.hass.loop.create_task(
                 self._state_stream_loop(dev_id)
             )
@@ -323,6 +325,11 @@ class TuyaLocalRuntime:
                 _close_tinytuya_device(self._stream_tinytuya_devices.pop(dev_id, None))
                 self._last_heartbeat.pop(dev_id, None)
                 self._stream_synced.discard(dev_id)
+                _LOGGER.debug(
+                    "Tuya state stream for %s will reconnect in %ss",
+                    dev_id,
+                    STATE_STREAM_RECONNECT_SECONDS,
+                )
                 await asyncio.sleep(STATE_STREAM_RECONNECT_SECONDS)
 
     def _receive_state_stream(self, dev_id: str) -> list[dict[str, Any]]:
@@ -333,6 +340,7 @@ class TuyaLocalRuntime:
         payloads: list[dict[str, Any]] = []
         if dev_id not in self._stream_synced:
             self._stream_synced.add(dev_id)
+            _LOGGER.debug("Tuya state stream %s initial refresh/sync started", dev_id)
             payloads.extend(self._sync_state_stream(dev_id, device))
 
         now = time.monotonic()
@@ -343,11 +351,21 @@ class TuyaLocalRuntime:
 
                 heartbeat = device.generate_payload(tinytuya.HEART_BEAT)
                 device.send(heartbeat)
+                _LOGGER.debug("Tuya state stream %s heartbeat sent", dev_id)
             except Exception:
-                _LOGGER.debug("Unable to send Tuya stream heartbeat for %s", dev_id)
+                _LOGGER.debug(
+                    "Unable to send Tuya stream heartbeat for %s",
+                    dev_id,
+                    exc_info=True,
+                )
 
         payload = device.receive()
         if isinstance(payload, dict):
+            _LOGGER.debug(
+                "Tuya state stream %s received %s",
+                dev_id,
+                _state_stream_payload_summary(payload),
+            )
             payloads.append(payload)
         return payloads
 
@@ -374,7 +392,19 @@ class TuyaLocalRuntime:
                 )
             else:
                 if isinstance(response, dict):
+                    _LOGGER.debug(
+                        "Tuya state stream %s refresh response %s",
+                        dev_id,
+                        _state_stream_payload_summary(response),
+                    )
                     payloads.append(response)
+                else:
+                    _LOGGER.debug(
+                        "Tuya state stream %s refresh response type=%s value=%r",
+                        dev_id,
+                        type(response).__name__,
+                        response,
+                    )
 
         endpoints = [root] if (not root.is_hub or root.dps) else []
         endpoints.extend(
@@ -408,7 +438,23 @@ class TuyaLocalRuntime:
             if isinstance(response, dict):
                 if endpoint.dev_id != dev_id and endpoint.node_id:
                     response.setdefault("cid", endpoint.node_id)
+                _LOGGER.debug(
+                    "Tuya state stream %s sync endpoint=%s node=%s response=%s",
+                    dev_id,
+                    endpoint.dev_id,
+                    endpoint.node_id,
+                    _state_stream_payload_summary(response),
+                )
                 payloads.append(response)
+            else:
+                _LOGGER.debug(
+                    "Tuya state stream %s sync endpoint=%s node=%s response type=%s value=%r",
+                    dev_id,
+                    endpoint.dev_id,
+                    endpoint.node_id,
+                    type(response).__name__,
+                    response,
+                )
 
         _LOGGER.debug(
             "Synced Tuya state stream for %s endpoints=%s payloads=%s",
@@ -425,15 +471,38 @@ class TuyaLocalRuntime:
     ) -> None:
         dps = _dps_from_payload(payload)
         if not dps:
+            _LOGGER.debug(
+                "Tuya state stream %s ignored payload without DPS: %s",
+                stream_dev_id,
+                _state_stream_payload_summary(payload),
+            )
             return
         target = self._state_stream_target_device(stream_dev_id, payload)
         if not target:
+            _LOGGER.debug(
+                "Tuya state stream %s could not map payload target: %s",
+                stream_dev_id,
+                _state_stream_payload_summary(payload),
+            )
             return
         changed = _apply_device_dps(target, dps)
         if changed:
-            _LOGGER.debug("Tuya state stream updated %s dps=%s", target.dev_id, changed)
+            _LOGGER.debug(
+                "Tuya state stream updated %s from stream=%s dps=%s callbacks=%s",
+                target.dev_id,
+                stream_dev_id,
+                changed,
+                len(self._state_callbacks),
+            )
             for listener in list(self._state_callbacks):
                 self.hass.loop.call_soon_threadsafe(listener, target.dev_id, changed)
+        else:
+            _LOGGER.debug(
+                "Tuya state stream %s mapped to %s but DPS unchanged: %s",
+                stream_dev_id,
+                target.dev_id,
+                dps,
+            )
 
     def _state_stream_target_device(
         self,
@@ -450,11 +519,35 @@ class TuyaLocalRuntime:
                 if not device.is_child:
                     continue
                 if _identifier_matches(device.node_id, candidates):
+                    _LOGGER.debug(
+                        "Tuya state stream %s payload cid=%s matched child node_id=%s dev_id=%s",
+                        stream_dev_id,
+                        cid,
+                        device.node_id,
+                        device.dev_id,
+                    )
                     return device
                 if _identifier_matches(device.uuid, candidates):
+                    _LOGGER.debug(
+                        "Tuya state stream %s payload cid=%s matched child uuid dev_id=%s",
+                        stream_dev_id,
+                        cid,
+                        device.dev_id,
+                    )
                     return device
                 if _identifier_matches(device.mac, candidates):
+                    _LOGGER.debug(
+                        "Tuya state stream %s payload cid=%s matched child mac dev_id=%s",
+                        stream_dev_id,
+                        cid,
+                        device.dev_id,
+                    )
                     return device
+            _LOGGER.debug(
+                "Tuya state stream %s payload cid=%s did not match any child",
+                stream_dev_id,
+                cid,
+            )
         return self.devices.get(stream_dev_id)
 
     def _handle_datagram(self, data: bytes, addr: tuple[str, int]) -> None:
@@ -503,12 +596,20 @@ class TuyaLocalRuntime:
             changed = True
         if changed:
             self._clear_tinytuya_cache_for(device.dev_id)
+            stream_dev_id = device.parent_dev_id if device.is_child else device.dev_id
+            if stream_dev_id:
+                _close_tinytuya_device(
+                    self._stream_tinytuya_devices.pop(stream_dev_id, None)
+                )
+                self._last_heartbeat.pop(stream_dev_id, None)
+                self._stream_synced.discard(stream_dev_id)
             _LOGGER.debug(
                 "Tuya broadcast updated %s ip=%s version=%s",
                 device.dev_id,
                 device.ip,
                 device.protocol_version,
             )
+            self._ensure_state_stream_tasks()
 
     def _broadcast_device(
         self,
@@ -1056,6 +1157,23 @@ def _dps_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(dps, dict):
         return {}
     return {str(key): value for key, value in dps.items()}
+
+
+def _state_stream_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data")
+    nested_dps = data.get("dps") if isinstance(data, dict) else None
+    return {
+        "devId": payload.get("devId"),
+        "cid": payload.get("cid")
+        or (data.get("cid") if isinstance(data, dict) else None),
+        "t": payload.get("t") or (data.get("t") if isinstance(data, dict) else None),
+        "dps": payload.get("dps") if isinstance(payload.get("dps"), dict) else nested_dps,
+        "keys": sorted(str(key) for key in payload.keys()),
+        "data_keys": sorted(str(key) for key in data.keys())
+        if isinstance(data, dict)
+        else None,
+        "error": payload.get("Error") or payload.get("Err") or payload.get("error"),
+    }
 
 
 def _apply_device_dps(
