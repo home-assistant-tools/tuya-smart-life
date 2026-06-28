@@ -898,6 +898,12 @@ def _ir_actions_from_scene_rules(
             remote = devices_by_id.get(remote_id)
             ext = exts.get(remote_id)
             ext = ext if isinstance(ext, dict) else {}
+            if remote and not _looks_like_ir_device(remote.raw):
+                continue
+            if not remote and not (
+                _looks_like_ir_device(ext) or _looks_like_ir_device(scene_action)
+            ):
+                continue
             hub_dev_id = _infer_ir_hub_id(
                 remote,
                 ext,
