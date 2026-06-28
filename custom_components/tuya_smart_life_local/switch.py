@@ -5,7 +5,7 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -52,6 +52,7 @@ class TuyaDpsSwitch(CoordinatorEntity[TuyaSmartLifeCoordinator], SwitchEntity):
         self.dp_id = str(dp_id)
         self._state = initial_value
         self._local_ok: bool | None = None
+        self._remove_dps_listener: CALLBACK_TYPE | None = None
         self._attr_unique_id = f"{device.dev_id}_{self.dp_id}"
         self._attr_name = label
         self._attr_device_info = {
@@ -85,6 +86,26 @@ class TuyaDpsSwitch(CoordinatorEntity[TuyaSmartLifeCoordinator], SwitchEntity):
         else:
             has_path = bool(device.ip and device.local_key)
         return has_path and self._local_ok is not False
+
+    async def async_added_to_hass(self) -> None:
+        self._remove_dps_listener = self.runtime.local.async_add_dps_listener(
+            self._handle_dps_update
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._remove_dps_listener:
+            self._remove_dps_listener()
+            self._remove_dps_listener = None
+
+    @callback
+    def _handle_dps_update(self, dev_id: str, dps: dict[str, Any]) -> None:
+        if dev_id != self.device.dev_id:
+            return
+        value = dps.get(self.dp_id)
+        if isinstance(value, bool):
+            self._local_ok = True
+            self._state = value
+            self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self._async_set(True)

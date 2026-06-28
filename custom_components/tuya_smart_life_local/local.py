@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 
 from .models import TuyaDeviceDescription, TuyaIrAction, TuyaIrClimate
 
@@ -19,6 +19,9 @@ _LOGGER = logging.getLogger(__name__)
 DISCOVERY_PORTS = (6666, 6667, 6699, 7000)
 DISCOVERY_SCAN_SECONDS = 8
 FORCE_SCAN_INTERVAL_SECONDS = 300
+STATE_STREAM_TIMEOUT_SECONDS = 10
+STATE_STREAM_RECONNECT_SECONDS = 5
+STATE_STREAM_HEARTBEAT_SECONDS = 10
 SWITCH_BUTTON_DP_IDS = {str(dp_id) for dp_id in range(1, 9)}
 FAN_PRODUCT_IDS = {"tqfl5ws2csdtdaak"}
 FAN_POWER_DP_ID = "1"
@@ -94,8 +97,12 @@ class TuyaLocalRuntime:
         self.ir_actions: dict[str, TuyaIrAction] = {}
         self.transports: list[asyncio.DatagramTransport] = []
         self._tinytuya_devices: dict[str, Any] = {}
+        self._stream_tinytuya_devices: dict[str, Any] = {}
         self._lock = asyncio.Lock()
         self._scan_task: asyncio.Task[None] | None = None
+        self._state_stream_tasks: dict[str, asyncio.Task[None]] = {}
+        self._state_callbacks: list[Callable[[str, dict[str, Any]], None]] = []
+        self._last_heartbeat: dict[str, float] = {}
         self._last_force_scan = 0.0
 
     async def async_start(self) -> None:
@@ -129,6 +136,14 @@ class TuyaLocalRuntime:
             )
 
     async def async_stop(self) -> None:
+        for task in self._state_stream_tasks.values():
+            task.cancel()
+        for task in list(self._state_stream_tasks.values()):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._state_stream_tasks.clear()
         if self._scan_task:
             self._scan_task.cancel()
             try:
@@ -140,13 +155,12 @@ class TuyaLocalRuntime:
             transport.close()
         self.transports.clear()
         for device in self._tinytuya_devices.values():
-            close = getattr(device, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
+            _close_tinytuya_device(device)
+        for device in self._stream_tinytuya_devices.values():
+            _close_tinytuya_device(device)
         self._tinytuya_devices.clear()
+        self._stream_tinytuya_devices.clear()
+        self._last_heartbeat.clear()
 
     async def _scan_loop(self) -> None:
         while True:
@@ -233,9 +247,136 @@ class TuyaLocalRuntime:
 
         self.devices = next_devices
         self._tinytuya_devices.clear()
+        self._ensure_state_stream_tasks()
 
     def update_ir_actions(self, actions: list[TuyaIrAction]) -> None:
         self.ir_actions = {action.unique_id: action for action in actions}
+
+    def async_add_dps_listener(
+        self,
+        listener: Callable[[str, dict[str, Any]], None],
+    ) -> CALLBACK_TYPE:
+        self._state_callbacks.append(listener)
+
+        def remove_listener() -> None:
+            if listener in self._state_callbacks:
+                self._state_callbacks.remove(listener)
+
+        return remove_listener
+
+    def _ensure_state_stream_tasks(self) -> None:
+        desired = self._state_stream_device_ids()
+
+        for dev_id, task in list(self._state_stream_tasks.items()):
+            if dev_id not in desired:
+                task.cancel()
+                self._state_stream_tasks.pop(dev_id, None)
+                _close_tinytuya_device(self._stream_tinytuya_devices.pop(dev_id, None))
+                self._last_heartbeat.pop(dev_id, None)
+
+        for dev_id in desired:
+            task = self._state_stream_tasks.get(dev_id)
+            if task and not task.done():
+                continue
+            self._state_stream_tasks[dev_id] = self.hass.loop.create_task(
+                self._state_stream_loop(dev_id)
+            )
+
+    def _state_stream_device_ids(self) -> set[str]:
+        ids: set[str] = set()
+        for device in self.devices.values():
+            if device.is_hub and not any(
+                child.parent_dev_id == device.dev_id for child in self.devices.values()
+            ):
+                continue
+            if device.is_child:
+                stream_dev_id = device.parent_dev_id
+            else:
+                stream_dev_id = device.dev_id
+            stream_device = self.devices.get(stream_dev_id or "")
+            if stream_device and stream_device.ip and stream_device.local_key:
+                ids.add(stream_device.dev_id)
+        return ids
+
+    async def _state_stream_loop(self, dev_id: str) -> None:
+        while dev_id in self.devices:
+            try:
+                payload = await self.hass.async_add_executor_job(
+                    self._receive_state_stream,
+                    dev_id,
+                )
+                if payload:
+                    self._handle_state_stream_payload(dev_id, payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                _LOGGER.debug(
+                    "Tuya state stream for %s failed: %s",
+                    dev_id,
+                    err,
+                    exc_info=True,
+                )
+                _close_tinytuya_device(self._stream_tinytuya_devices.pop(dev_id, None))
+                self._last_heartbeat.pop(dev_id, None)
+                await asyncio.sleep(STATE_STREAM_RECONNECT_SECONDS)
+
+    def _receive_state_stream(self, dev_id: str) -> dict[str, Any] | None:
+        device = self._stream_tinytuya_device(dev_id)
+        if not device:
+            return None
+
+        now = time.monotonic()
+        if now - self._last_heartbeat.get(dev_id, 0.0) >= STATE_STREAM_HEARTBEAT_SECONDS:
+            self._last_heartbeat[dev_id] = now
+            try:
+                import tinytuya
+
+                heartbeat = device.generate_payload(tinytuya.HEART_BEAT)
+                device.send(heartbeat)
+            except Exception:
+                _LOGGER.debug("Unable to send Tuya stream heartbeat for %s", dev_id)
+
+        payload = device.receive()
+        return payload if isinstance(payload, dict) else None
+
+    def _handle_state_stream_payload(
+        self,
+        stream_dev_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        dps = _dps_from_payload(payload)
+        if not dps:
+            return
+        target = self._state_stream_target_device(stream_dev_id, payload)
+        if not target:
+            return
+        changed = _apply_device_dps(target, dps)
+        if changed:
+            _LOGGER.debug("Tuya state stream updated %s dps=%s", target.dev_id, changed)
+            for listener in list(self._state_callbacks):
+                self.hass.loop.call_soon_threadsafe(listener, target.dev_id, changed)
+
+    def _state_stream_target_device(
+        self,
+        stream_dev_id: str,
+        payload: dict[str, Any],
+    ) -> TuyaDeviceDescription | None:
+        cid = payload.get("cid")
+        data = payload.get("data")
+        if cid is None and isinstance(data, dict):
+            cid = data.get("cid")
+        if cid is not None:
+            candidates = [str(cid)]
+            for device in self.devices.values():
+                if not device.is_child:
+                    continue
+                if _identifier_matches(device.node_id, candidates):
+                    return device
+                if _identifier_matches(device.uuid, candidates):
+                    return device
+                if _identifier_matches(device.mac, candidates):
+                    return device
+        return self.devices.get(stream_dev_id)
 
     def _handle_datagram(self, data: bytes, addr: tuple[str, int]) -> None:
         try:
@@ -582,6 +723,31 @@ class TuyaLocalRuntime:
         self._tinytuya_devices[dev_id] = tinytuya_device
         return tinytuya_device
 
+    def _stream_tinytuya_device(self, dev_id: str) -> Any:
+        existing = self._stream_tinytuya_devices.get(dev_id)
+        if existing:
+            return existing
+
+        device = self.devices.get(dev_id)
+        if not device or device.is_child or not device.ip or not device.local_key:
+            return None
+
+        try:
+            import tinytuya
+        except ImportError as err:
+            raise RuntimeError("tinytuya is not installed") from err
+
+        tinytuya_device = self._make_tinytuya_device(
+            tinytuya,
+            device,
+            device.ip,
+            device.local_key,
+            None,
+            persistent=True,
+        )
+        self._stream_tinytuya_devices[dev_id] = tinytuya_device
+        return tinytuya_device
+
     @staticmethod
     def _make_tinytuya_device(
         tinytuya: Any,
@@ -589,6 +755,7 @@ class TuyaLocalRuntime:
         ip: str,
         local_key: str,
         parent: Any | None,
+        persistent: bool = False,
     ) -> Any:
         version = _protocol_version(device.protocol_version)
         kwargs: dict[str, Any] = {"version": version}
@@ -627,9 +794,13 @@ class TuyaLocalRuntime:
         if hasattr(tuya_device, "set_version"):
             tuya_device.set_version(version)
         if hasattr(tuya_device, "set_socketPersistent"):
-            tuya_device.set_socketPersistent(False)
+            tuya_device.set_socketPersistent(persistent)
         if hasattr(tuya_device, "set_socketNODELAY"):
             tuya_device.set_socketNODELAY(True)
+        if persistent and hasattr(tuya_device, "set_socketRetryLimit"):
+            tuya_device.set_socketRetryLimit(1)
+        if persistent and hasattr(tuya_device, "set_socketTimeout"):
+            tuya_device.set_socketTimeout(STATE_STREAM_TIMEOUT_SECONDS)
         return tuya_device
 
 
@@ -789,6 +960,52 @@ def _normalize_command_dps(dps: dict[str, Any]) -> dict[Any, Any]:
         key: Any = int(dp_id) if str(dp_id).isdecimal() else str(dp_id)
         normalized[key] = value
     return normalized
+
+
+def _dps_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    dps = payload.get("dps")
+    if not isinstance(dps, dict):
+        data = payload.get("data")
+        if isinstance(data, dict):
+            dps = data.get("dps")
+    if not isinstance(dps, dict):
+        return {}
+    return {str(key): value for key, value in dps.items()}
+
+
+def _apply_device_dps(
+    device: TuyaDeviceDescription,
+    dps: dict[str, Any],
+) -> dict[str, Any]:
+    changed: dict[str, Any] = {}
+    for dp_id, value in dps.items():
+        key = str(dp_id)
+        if device.dps.get(key) != value:
+            device.dps[key] = value
+            changed[key] = value
+    return changed
+
+
+def _close_tinytuya_device(device: Any | None) -> None:
+    if not device:
+        return
+    close = getattr(device, "close", None)
+    if callable(close):
+        try:
+            close()
+            return
+        except Exception:
+            pass
+    sock = getattr(device, "socket", None)
+    if sock:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        try:
+            device.socket = None
+        except Exception:
+            pass
 
 
 def _is_fan_device(device: TuyaDeviceDescription) -> bool:

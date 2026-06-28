@@ -5,7 +5,7 @@ from typing import Any
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -53,6 +53,7 @@ class TuyaDpsFan(CoordinatorEntity[TuyaSmartLifeCoordinator], FanEntity):
         self.runtime = runtime
         self.device = device
         self._local_ok: bool | None = None
+        self._remove_dps_listener: CALLBACK_TYPE | None = None
         self._attr_unique_id = f"{device.dev_id}_fan"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, device.dev_id)},
@@ -81,6 +82,24 @@ class TuyaDpsFan(CoordinatorEntity[TuyaSmartLifeCoordinator], FanEntity):
         else:
             has_path = bool(device.ip and device.local_key)
         return has_path and self._local_ok is not False
+
+    async def async_added_to_hass(self) -> None:
+        self._remove_dps_listener = self.runtime.local.async_add_dps_listener(
+            self._handle_dps_update
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._remove_dps_listener:
+            self._remove_dps_listener()
+            self._remove_dps_listener = None
+
+    @callback
+    def _handle_dps_update(self, dev_id: str, dps: dict[str, Any]) -> None:
+        if dev_id != self.device.dev_id:
+            return
+        if FAN_POWER_DP_ID in dps or FAN_SPEED_DP_ID in dps:
+            self._local_ok = True
+            self.async_write_ha_state()
 
     @property
     def is_on(self) -> bool | None:
