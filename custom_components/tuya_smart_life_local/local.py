@@ -22,6 +22,7 @@ FORCE_SCAN_INTERVAL_SECONDS = 300
 STATE_STREAM_TIMEOUT_SECONDS = 10
 STATE_STREAM_RECONNECT_SECONDS = 5
 STATE_STREAM_HEARTBEAT_SECONDS = 10
+STATE_STREAM_REFRESH_DP_IDS = [4, 5, 6, 18, 19, 20]
 SWITCH_BUTTON_DP_IDS = {str(dp_id) for dp_id in range(1, 9)}
 FAN_PRODUCT_IDS = {"tqfl5ws2csdtdaak"}
 FAN_POWER_DP_ID = "1"
@@ -362,6 +363,19 @@ class TuyaLocalRuntime:
             return []
 
         payloads: list[dict[str, Any]] = []
+        if hasattr(stream_device, "updatedps"):
+            try:
+                response = stream_device.updatedps(STATE_STREAM_REFRESH_DP_IDS)
+            except Exception:
+                _LOGGER.debug(
+                    "Unable to refresh Tuya state stream for %s",
+                    dev_id,
+                    exc_info=True,
+                )
+            else:
+                if isinstance(response, dict):
+                    payloads.append(response)
+
         endpoints = [root] if (not root.is_hub or root.dps) else []
         endpoints.extend(
             child
