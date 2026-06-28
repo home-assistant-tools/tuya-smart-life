@@ -1025,7 +1025,7 @@ def _looks_like_ir_scene_action(value: dict[str, Any]) -> bool:
         )
     ):
         return False
-    return _extract_action_maps(value) is not None
+    return _extract_action_maps(value) is not None and _looks_like_ir_device(value)
 
 
 def _scene_rule_id(rule: dict[str, Any]) -> str | None:
