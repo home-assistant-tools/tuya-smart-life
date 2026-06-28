@@ -40,15 +40,19 @@ Integration này không cần tạo Tuya IoT Cloud project, không cần nhập 
 ## Yêu cầu
 
 - Home Assistant đã cài HACS.
-- Home Assistant phải nằm cùng LAN với thiết bị muốn điều khiển local.
+- Home Assistant phải nằm cùng lớp mạng/broadcast domain với thiết bị muốn điều
+  khiển local. Integration cần nhận UDP broadcast của Tuya để tự tìm IP/version
+  và mở TCP stream realtime.
 - Tài khoản Smart Life/Tuya Smart đang quản lý các thiết bị đó.
 - Thiết bị cần có local key trong mobile API và mở được local Tuya protocol.
 - Với remote IR, IR hub phải cùng LAN với Home Assistant. Remote con như TV,
   điều hoà, quạt IR là thiết bị ảo sau hub nên lệnh thực tế vẫn đi qua hub.
 
-Lưu ý quan trọng: nếu một nhà trong Smart Life nằm ở LAN khác, Home Assistant
-không thể điều khiển local các thiết bị của nhà đó. Chỉ chọn các nhà mà HA có
-đường mạng trực tiếp tới thiết bị.
+Lưu ý quan trọng: nếu một nhà trong Smart Life nằm ở LAN/subnet/VLAN khác,
+Home Assistant chưa thể tự kết nối local các thiết bị của nhà đó. Kết nối
+xuyên mạng hiện chưa được hỗ trợ vì UDP broadcast/discovery không đi qua router
+theo mặc định; chỉ route TCP/ping được tới thiết bị là chưa đủ cho cơ chế tự
+động hiện tại. Chỉ chọn các nhà mà HA nằm chung lớp mạng với thiết bị/hub.
 
 ## Cài Đặt Qua HACS
 
@@ -82,7 +86,7 @@ nhập `09...`, integration cũng sẽ thử biến thể `9...` vì mobile API 
 code riêng.
 
 Sau khi đổi danh sách nhà trong options, integration sẽ reload để registry được
-dọn và load lại đúng thiết bị. Nếu đang dùng bản cũ hơn `0.1.32`, hãy reload
+dọn và load lại đúng thiết bị. Nếu đang dùng bản cũ hơn `0.1.33`, hãy reload
 hoặc restart Home Assistant sau khi cập nhật.
 
 ## Cách Điều Khiển Local Hoạt Động
@@ -184,10 +188,13 @@ HACS sẽ thấy các phiên bản GitHub release của repository này. Để c
 
 ### Entity unavailable hoặc không điều khiển được
 
-- Kiểm tra HA và thiết bị có cùng LAN không.
+- Kiểm tra HA và thiết bị có cùng lớp mạng/broadcast domain không.
 - Nếu chạy HA trong Docker/TrueNAS, nên dùng network mode có thể nhận broadcast
   LAN. Integration cần nghe UDP `6666`, `6667`, `6699`, `7000` và kết nối TCP
   local tới thiết bị.
+- Kết nối xuyên subnet/VLAN/WAN chưa được hỗ trợ tự động. UDP broadcast của Tuya
+  không đi qua router, nên HA có thể ping/TCP tới IP thiết bị nhưng vẫn không tự
+  học được IP/protocol version để duy trì local realtime ổn định.
 - Nếu mobile API trả IP public/WAN, integration sẽ bỏ qua IP đó và chờ broadcast
   hoặc LAN scan tìm IP private.
 - Một số thiết bị có thể trả local key/version không khớp; khi đó TinyTuya sẽ
