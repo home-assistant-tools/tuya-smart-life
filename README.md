@@ -77,7 +77,7 @@ nhập `09...`, integration cũng sẽ thử biến thể `9...` vì mobile API 
 code riêng.
 
 Sau khi đổi danh sách nhà trong options, integration sẽ reload để registry được
-dọn và load lại đúng thiết bị. Nếu đang dùng bản cũ hơn `0.1.26`, hãy reload
+dọn và load lại đúng thiết bị. Nếu đang dùng bản cũ hơn `0.1.27`, hãy reload
 hoặc restart Home Assistant sau khi cập nhật.
 
 ## Cách Điều Khiển Local Hoạt Động

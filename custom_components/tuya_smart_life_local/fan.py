@@ -91,6 +91,10 @@ class TuyaDpsFan(CoordinatorEntity[TuyaSmartLifeCoordinator], FanEntity):
         return value if isinstance(value, bool) else None
 
     @property
+    def percentage_step(self) -> float:
+        return PERCENTAGE_STEP
+
+    @property
     def percentage(self) -> int | None:
         if self.is_on is False:
             return 0
