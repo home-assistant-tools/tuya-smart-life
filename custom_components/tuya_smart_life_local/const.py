@@ -13,6 +13,7 @@ PLATFORMS = [
 
 CONF_APP_ID = "app_id"
 CONF_APP_SECRET = "app_secret"
+CONF_API_REGION = "api_region"
 CONF_APP_VERSION = "app_version"
 CONF_BMP_KEY = "bmp_key"
 CONF_CERT_SHA256 = "cert_sha256"
@@ -25,6 +26,7 @@ CONF_SELECTED_HOME_IDS = "selected_home_ids"
 CONF_SDK_VERSION = "sdk_version"
 
 DEFAULT_APP_ID = "3cxxt3au9x33ytvq3h9j"
+DEFAULT_API_REGION = "auto"
 DEFAULT_APP_VERSION = "7.8.6"
 DEFAULT_APP_RN_VERSION = "5.84"
 DEFAULT_CH_KEY = "3f7060ea"
@@ -41,5 +43,13 @@ DEFAULT_OS_SYSTEM = "15"
 DEFAULT_PACKAGE_NAME = "com.tuya.smart"
 DEFAULT_SDK_VERSION = "5.24.0"
 DEFAULT_SCAN_INTERVAL_SECONDS = 1800
+
+MOBILE_API_ENDPOINTS = {
+    "us": "https://a1.tuyaus.com/api.json",
+    "sg": "https://a1-sg.iotbing.com/api.json",
+    "eu": "https://a1.tuyaeu.com/api.json",
+    "cn": "https://a1.tuyacn.com/api.json",
+    "in": "https://a1.tuyain.com/api.json",
+}
 
 ENTRY_RUNTIME = "runtime"

@@ -14,6 +14,7 @@ from .api import TuyaMobileApiError, TuyaSmartLifeMobileApi
 from .const import (
     CONF_APP_ID,
     CONF_APP_SECRET,
+    CONF_API_REGION,
     CONF_APP_VERSION,
     CONF_BMP_KEY,
     CONF_CERT_SHA256,
@@ -25,6 +26,7 @@ from .const import (
     CONF_SDK_VERSION,
     CONF_SELECTED_HOME_IDS,
     DEFAULT_APP_ID,
+    DEFAULT_API_REGION,
     DEFAULT_APP_VERSION,
     DEFAULT_COUNTRY_CODE,
     DEFAULT_DEVICE_CORE_VERSION,
@@ -33,6 +35,7 @@ from .const import (
     DEFAULT_PACKAGE_NAME,
     DEFAULT_SDK_VERSION,
     DOMAIN,
+    MOBILE_API_ENDPOINTS,
 )
 from .models import TuyaHome, TuyaMobileConfig
 
@@ -44,6 +47,7 @@ def mobile_config_from_data(data: dict[str, Any]) -> TuyaMobileConfig:
         email=data[CONF_EMAIL],
         password=data[CONF_PASSWORD],
         country_code=data.get(CONF_COUNTRY_CODE, DEFAULT_COUNTRY_CODE),
+        api_region=data.get(CONF_API_REGION, DEFAULT_API_REGION),
         app_id=data.get(CONF_APP_ID, DEFAULT_APP_ID),
         app_secret=data.get(CONF_APP_SECRET) or None,
         cert_sha256=data.get(CONF_CERT_SHA256) or None,
@@ -66,6 +70,25 @@ def user_schema(user_input: dict[str, Any] | None = None) -> vol.Schema:
             vol.Required(CONF_EMAIL, default=values.get(CONF_EMAIL, "")): str,
             vol.Required(CONF_PASSWORD): selector.TextSelector(
                 selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+            ),
+            vol.Optional(
+                CONF_COUNTRY_CODE,
+                default=values.get(CONF_COUNTRY_CODE, DEFAULT_COUNTRY_CODE),
+            ): str,
+            vol.Optional(
+                CONF_API_REGION,
+                default=values.get(CONF_API_REGION, DEFAULT_API_REGION),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        {"value": DEFAULT_API_REGION, "label": "Auto"},
+                        *[
+                            {"value": region, "label": region.upper()}
+                            for region in MOBILE_API_ENDPOINTS
+                        ],
+                    ],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
             ),
         }
     )
@@ -129,8 +152,10 @@ class TuyaSmartLifeLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._user_data = dict(user_input)
                 self._homes = homes
                 _LOGGER.debug(
-                    "Authenticated Tuya mobile account uid=%s homes=%s",
+                    "Authenticated Tuya mobile account uid=%s region=%s endpoint=%s homes=%s",
                     session.uid,
+                    session.region,
+                    session.endpoint,
                     len(homes),
                 )
                 return await self.async_step_select_homes()

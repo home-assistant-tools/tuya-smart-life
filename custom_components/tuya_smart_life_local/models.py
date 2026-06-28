@@ -17,6 +17,7 @@ class TuyaMobileConfig:
     email: str
     password: str
     country_code: str
+    api_region: str
     app_id: str
     app_secret: str | None
     cert_sha256: str | None
@@ -28,7 +29,7 @@ class TuyaMobileConfig:
     device_core_version: str
     os_system: str
     device_id: str | None = None
-    endpoint: str = "https://a1.tuyaus.com/api.json"
+    endpoint: str | None = None
 
 
 @dataclass(slots=True)
@@ -37,6 +38,7 @@ class TuyaSession:
     ecode: str | None
     uid: str | None
     region: str | None
+    endpoint: str | None
     raw: dict[str, Any]
 
 

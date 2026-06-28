@@ -6,7 +6,9 @@
         "description": "Login with your Smart Life or Tuya Smart email/phone account, then select the homes to sync.",
         "data": {
           "email": "Email / phone number",
-          "password": "Password"
+          "password": "Password",
+          "country_code": "Country code",
+          "api_region": "API region"
         }
       },
       "select_homes": {

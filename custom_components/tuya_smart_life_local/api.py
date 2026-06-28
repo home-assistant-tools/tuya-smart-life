@@ -12,7 +12,7 @@ import urllib.request
 import uuid
 from typing import Any
 
-from .const import DEFAULT_APP_RN_VERSION, DEFAULT_CH_KEY
+from .const import DEFAULT_APP_RN_VERSION, DEFAULT_CH_KEY, MOBILE_API_ENDPOINTS
 from .models import (
     TuyaDeviceDescription,
     TuyaHome,
@@ -243,6 +243,29 @@ def should_try_next_mobile_login_api(response: dict[str, Any]) -> bool:
     return not any(marker in text for marker in auth_markers)
 
 
+def _endpoint_from_domain(domain: dict[str, Any]) -> str | None:
+    pending: list[Any] = [domain]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.values())
+            continue
+        if isinstance(value, list):
+            pending.extend(value)
+            continue
+        if not isinstance(value, str):
+            continue
+        endpoint = value.strip()
+        if not endpoint.startswith(("http://", "https://")):
+            continue
+        if "api.json" in endpoint:
+            return endpoint
+        if not any(marker in endpoint for marker in ("tuya", "iotbing")):
+            continue
+        return endpoint.rstrip("/") + "/api.json"
+    return None
+
+
 class TuyaSmartLifeMobileApi:
     """Tuya Smart Life mobile API client using the reversed native signature."""
 
@@ -252,6 +275,22 @@ class TuyaSmartLifeMobileApi:
             config.email, config.app_id, config.package_name
         )
         self.native_key = self._native_key()
+        self.endpoint = config.endpoint or self._endpoint_candidates()[0]
+
+    def _endpoint_candidates(self) -> list[str]:
+        region = (self.config.api_region or "auto").strip().lower()
+        if self.config.endpoint:
+            return [self.config.endpoint]
+        if region in MOBILE_API_ENDPOINTS:
+            return [MOBILE_API_ENDPOINTS[region]]
+        endpoints = [
+            MOBILE_API_ENDPOINTS["us"],
+            MOBILE_API_ENDPOINTS["sg"],
+            MOBILE_API_ENDPOINTS["eu"],
+            MOBILE_API_ENDPOINTS["cn"],
+            MOBILE_API_ENDPOINTS["in"],
+        ]
+        return list(dict.fromkeys(endpoints))
 
     def _native_key(self) -> bytes:
         if self.config.native_key_text:
@@ -310,7 +349,7 @@ class TuyaSmartLifeMobileApi:
 
         params["sign"] = request_sign(build_sign_input(params), self.native_key)
         request = urllib.request.Request(
-            self.config.endpoint,
+            self.endpoint,
             data=urllib.parse.urlencode(params).encode(),
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -330,6 +369,17 @@ class TuyaSmartLifeMobileApi:
                 raise TuyaMobileApiError(body) from err
 
     def login(self) -> TuyaSession:
+        last_error: TuyaMobileApiError | None = None
+        for endpoint in self._endpoint_candidates():
+            self.endpoint = endpoint
+            try:
+                return self._login_once()
+            except TuyaMobileApiError as err:
+                last_error = err
+                _LOGGER.debug("Tuya mobile login failed on %s: %s", endpoint, err)
+        raise last_error or TuyaMobileApiError("Tuya mobile login failed")
+
+    def _login_once(self) -> TuyaSession:
         username = self.config.email.strip()
         _, token_response = self.request(
             *TOKEN_API,
@@ -400,17 +450,30 @@ class TuyaSmartLifeMobileApi:
         self._raise_for_response(last_response or {}, last_context)
         raise TuyaMobileApiError(f"{last_context} failed")
 
-    @staticmethod
-    def _session_from_login_response(login_response: dict[str, Any]) -> TuyaSession:
+    def _session_from_login_response(self, login_response: dict[str, Any]) -> TuyaSession:
         result = login_response["result"]
         domain = result.get("domain") if isinstance(result.get("domain"), dict) else {}
+        self._update_endpoint_from_domain(domain)
         return TuyaSession(
             sid=result["sid"],
             ecode=result.get("ecode"),
             uid=result.get("uid"),
             region=domain.get("regionCode"),
+            endpoint=self.endpoint,
             raw=result,
         )
+
+    def _update_endpoint_from_domain(self, domain: dict[str, Any]) -> None:
+        endpoint = _endpoint_from_domain(domain)
+        if endpoint:
+            self.endpoint = endpoint
+            return
+
+        region = str(domain.get("regionCode") or "").strip().lower()
+        for key, endpoint in MOBILE_API_ENDPOINTS.items():
+            if region == key or key in region:
+                self.endpoint = endpoint
+                return
 
     def list_homes(self, session: TuyaSession) -> list[TuyaHome]:
         _, response = self.request(*HOME_LIST_API, sid=session.sid)

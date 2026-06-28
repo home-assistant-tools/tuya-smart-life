@@ -87,18 +87,26 @@ whose devices/hubs are on the same broadcast domain as Home Assistant.
 2. Click **Add integration**.
 3. Search for **Tuya Smart Life Local**.
 4. Enter your Smart Life/Tuya Smart email address or phone number and password.
+   Keep **API region** on **Auto** unless login fails for your account region.
 5. After login succeeds, select the homes you want to sync, or leave the list
    empty if you do not want to load any devices yet.
 6. Submit the flow and wait for Home Assistant to create devices/entities.
 
-For phone-number login, the default country code is `84`. The integration
-recognizes numbers formatted as `+84...` or `0084...`. For Vietnam-style phone
-numbers entered as `09...`, it also tries the `9...` form because the mobile API
-expects the country code separately.
+For phone-number login, the default country code is `84`. Change it to your
+phone country code if your account is outside Vietnam. The integration
+recognizes numbers formatted as `+<country code>...` or
+`00<country code>...`. For phone numbers entered with a leading `0`, it also
+tries the variant without the leading `0` because the mobile API expects the
+country code separately.
+
+The **API region** setting selects the Tuya mobile API endpoint, not a Tuya IoT
+Cloud project region. `Auto` currently tries the known Smart Life/Tuya Smart
+mobile endpoints for US, Singapore, EU, China, and India, then follows the
+domain/region information returned by Tuya after login when available.
 
 After changing the selected home list in integration options, the integration
 reloads so Home Assistant can clean up and recreate the correct registry
-entries. If you are upgrading from a version older than `0.1.34`, reload or
+entries. If you are upgrading from a version older than `0.1.35`, reload or
 restart Home Assistant after updating.
 
 ## How Local Control Works
@@ -199,6 +207,8 @@ HACS detects GitHub releases from this repository. To update:
 
 - Check the email/phone number/password.
 - Check Home Assistant internet access.
+- If the account was created in another Smart Life/Tuya Smart region, leave
+  **API region** on **Auto** or try the matching region manually.
 - If Smart Life requires MFA or another secondary verification flow, the login
   script may not handle that flow yet.
 
