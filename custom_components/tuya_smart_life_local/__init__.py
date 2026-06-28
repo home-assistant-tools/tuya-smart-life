@@ -95,6 +95,11 @@ def _remove_stale_registry_entries(
     active_unique_ids.update(
         f"{device.dev_id}_fan" for device in local_runtime.fan_devices()
     )
+    active_unique_ids.update(remote.unique_id for remote in local_runtime.ir_fans())
+    active_unique_ids.update(remote.unique_id for remote in local_runtime.ir_lights())
+    active_unique_ids.update(
+        remote.unique_id for remote in local_runtime.ir_media_players()
+    )
     active_unique_ids.update(
         f"{device.dev_id}_online" for device in local_runtime.hub_devices()
     )
@@ -117,6 +122,11 @@ def _remove_stale_registry_entries(
     )
     active_device_ids.update(
         climate.remote_id for climate in local_runtime.ir_climates()
+    )
+    active_device_ids.update(remote.remote_id for remote in local_runtime.ir_fans())
+    active_device_ids.update(remote.remote_id for remote in local_runtime.ir_lights())
+    active_device_ids.update(
+        remote.remote_id for remote in local_runtime.ir_media_players()
     )
     device_registry = dr.async_get(hass)
     remove_device = getattr(device_registry, "async_remove_device", None)

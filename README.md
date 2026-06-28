@@ -30,14 +30,16 @@ enter an `app_id`, `app_secret`, certificate fingerprint, or native signing key.
   If `dataPointInfo.dpName` contains labels, those labels are used; otherwise
   entities fall back to names such as `Button <dp_id>`.
 - Create fan entities for recognized fan devices, for example devices with
-  separate power and speed DPS values.
+  separate power and speed DPS values, and for supported IR fan remotes.
 - Create a diagnostic `Online` binary sensor for hubs so hubs still appear in
   Home Assistant even when they do not expose direct control buttons.
 - Create button entities for IR remotes when the Tuya mobile API returns usable
-  virtual remote action DPS payloads.
-- Detect some IR AC/climate remotes and create experimental climate entities.
-  Climate commands are sent locally through the IR hub; state is optimistic
-  because IR appliances do not report their real state back.
+  virtual remote action DPS payloads, including fallback keys for DIY and media
+  remotes.
+- Detect IR AC/climate, fan, light, TV/set-top box, audio, projector, and DVD
+  remotes from Tuya's infrared APIs. Climate, fan, light, and media_player
+  commands are sent locally through the IR hub; state is optimistic because IR
+  appliances do not report their real state back.
 - Clean up stale entities/devices when you change the selected home list.
 
 ## Requirements
@@ -106,7 +108,7 @@ domain/region information returned by Tuya after login when available.
 
 After changing the selected home list in integration options, the integration
 reloads so Home Assistant can clean up and recreate the correct registry
-entries. If you are upgrading from a version older than `0.1.35`, reload or
+entries. If you are upgrading from a version older than `0.1.36`, reload or
 restart Home Assistant after updating.
 
 ## How Local Control Works
@@ -166,9 +168,12 @@ Tuya manages IR devices in two layers:
 - Virtual IR remote: TV, AC, fan, and similar remotes behind the IR hub. These
   have a `remote_id`.
 
-The integration calls `thing.m.linkage.dev.list` and
-`thing.m.linkage.function.list` to fetch the remotes/actions used by the Tuya
-app automation editor. It also tries scene-rule APIs such as
+The integration calls `tuya.m.infrared.gateway.get` and
+`tuya.m.infrared.keydata.get` to fetch virtual IR remotes and their key data,
+then builds local hub DP `201` payloads from the same data used by the Tuya app
+IR panel. It also calls `thing.m.linkage.dev.list` and
+`thing.m.linkage.function.list` to fetch remotes/actions used by the Tuya app
+automation editor, and tries scene-rule APIs such as
 `thing.m.linkage.rule.query` and `thing.m.linkage.rule.detail.find` to import
 IR payloads saved by the app in scenes. If an action contains valid raw DPS,
 Home Assistant creates a matching button and publishes that raw DPS directly to
@@ -176,10 +181,17 @@ the local IR hub. The virtual remote `remote_id` is used only for naming,
 entity identity, and report metadata; it is not packaged as a local `cid` in
 the frame sent to the hub.
 
-If a remote is recognized as an AC/climate remote and has enough `power`,
-`mode`, `temp`, or `wind` actions, the integration also creates a climate
-entity. IR climate control is one-way, so Home Assistant state represents the
-last command sent, not a state read back from the appliance.
+Recognized IR remotes are mapped to Home Assistant platforms:
+
+- AC/air conditioner: `climate`.
+- Fan: `fan`.
+- TV, set-top box, TV box, audio, projector, DVD: `media_player` plus raw key
+  buttons for commands that do not fit Home Assistant's media model.
+- Light: `light`.
+- DIY/unknown: `button` fallback.
+
+IR control is one-way, so Home Assistant state represents the last command
+sent, not a state read back from the appliance.
 
 To debug IR data outside Home Assistant:
 
@@ -239,8 +251,8 @@ HACS detects GitHub releases from this repository. To update:
 - Check that the selected home has an IR hub on the same LAN as Home Assistant.
 - Run `tools/tuya_mobile_login.py --action ir --home-id <home-id>` to see
   whether the mobile API returns remote/action data.
-- If Tuya returns only raw standalone buttons, the integration creates buttons
-  instead of a climate entity.
+- If Tuya returns only raw standalone buttons, the integration creates button
+  entities instead of a higher-level climate/fan/light/media_player entity.
 - If neither API nor scenes return `actionDps`/`executorProperty`, the current
   data is not enough to press the local IR action. In that case, creating a
   scene in the Tuya app for the needed IR button may help the app store the

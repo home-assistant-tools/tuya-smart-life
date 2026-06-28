@@ -90,6 +90,8 @@ class TuyaIrAction:
     report_dps: dict[str, Any] = field(default_factory=dict)
     product_id: str | None = None
     category: str | None = None
+    remote_kind: str | None = None
+    dev_type_id: int | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -111,6 +113,26 @@ class TuyaIrClimate:
     @property
     def unique_id(self) -> str:
         return f"{self.remote_id}_ir_climate"
+
+
+@dataclass(slots=True)
+class TuyaIrRemote:
+    remote_id: str
+    remote_name: str
+    home_id: str
+    home_name: str
+    hub_dev_id: str
+    kind: str
+    actions: list[TuyaIrAction]
+    product_id: str | None = None
+    category: str | None = None
+    dev_type_id: int | None = None
+    brand_name: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self.remote_id}_ir_{self.kind}"
 
 
 def home_id_from_raw(raw: dict[str, Any]) -> str:

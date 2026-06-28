@@ -13,7 +13,7 @@ from typing import Any
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 
-from .models import TuyaDeviceDescription, TuyaIrAction, TuyaIrClimate
+from .models import TuyaDeviceDescription, TuyaIrAction, TuyaIrClimate, TuyaIrRemote
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +66,10 @@ IR_CLIMATE_CATEGORY_MARKERS = (
     "hvac",
     "kt",
 )
+IR_FAN_CATEGORY_MARKERS = ("fan", "quat")
+IR_LIGHT_CATEGORY_MARKERS = ("light", "den")
+IR_MEDIA_REMOTE_KINDS = {"media_player"}
+IR_BUTTON_REMOTE_KINDS = {"button", "unknown"}
 IR_CLIMATE_ACTION_MARKERS = (
     "cool",
     "dry",
@@ -676,7 +680,7 @@ class TuyaLocalRuntime:
             (
                 action
                 for action in self.ir_actions.values()
-                if _ir_action_schema_kind(action) != "climate"
+                if _is_ir_button_action(action)
             ),
             key=lambda action: (action.home_name, action.remote_name, action.action_name),
         )
@@ -707,6 +711,43 @@ class TuyaLocalRuntime:
             climates,
             key=lambda climate: (climate.home_name, climate.remote_name),
         )
+
+    def ir_fans(self) -> list[TuyaIrRemote]:
+        return self._ir_remotes_for_kinds({"fan"})
+
+    def ir_lights(self) -> list[TuyaIrRemote]:
+        return self._ir_remotes_for_kinds({"light"})
+
+    def ir_media_players(self) -> list[TuyaIrRemote]:
+        return self._ir_remotes_for_kinds(IR_MEDIA_REMOTE_KINDS)
+
+    def _ir_remotes_for_kinds(self, kinds: set[str]) -> list[TuyaIrRemote]:
+        grouped: dict[str, list[TuyaIrAction]] = {}
+        for action in self.ir_actions.values():
+            kind = _ir_remote_kind([action])
+            if kind in kinds:
+                grouped.setdefault(action.remote_id, []).append(action)
+
+        remotes: list[TuyaIrRemote] = []
+        for remote_id, actions in grouped.items():
+            first = actions[0]
+            remotes.append(
+                TuyaIrRemote(
+                    remote_id=remote_id,
+                    remote_name=first.remote_name,
+                    home_id=first.home_id,
+                    home_name=first.home_name,
+                    hub_dev_id=first.hub_dev_id,
+                    kind=_ir_remote_kind(actions),
+                    actions=sorted(actions, key=lambda action: action.action_name),
+                    product_id=first.product_id,
+                    category=first.category,
+                    dev_type_id=first.dev_type_id,
+                    brand_name=_ir_remote_brand_name(actions),
+                    raw=_ir_remote_raw(actions),
+                )
+            )
+        return sorted(remotes, key=lambda remote: (remote.home_name, remote.remote_name))
 
     async def async_status(self, device: TuyaDeviceDescription) -> dict[str, Any]:
         return await self.hass.async_add_executor_job(self._status, device.dev_id)
@@ -1203,9 +1244,83 @@ def _ir_action_schema_kind(action: TuyaIrAction) -> str | None:
     return None
 
 
+def _is_ir_button_action(action: TuyaIrAction) -> bool:
+    kind = _ir_remote_kind([action])
+    if kind in {"climate", "fan", "light"}:
+        return False
+    # Media remotes keep their raw keys as buttons because HA's media_player
+    # model only covers a small command subset.
+    return _ir_action_schema_kind(action) != "climate"
+
+
+def _ir_remote_kind(actions: list[TuyaIrAction]) -> str:
+    explicit = next((action.remote_kind for action in actions if action.remote_kind), None)
+    if explicit:
+        return explicit
+    if _is_ir_climate_remote(actions):
+        return "climate"
+    category = _ascii_fold(" ".join(action.category or "" for action in actions)).lower()
+    if any(marker in category for marker in IR_FAN_CATEGORY_MARKERS):
+        return "fan"
+    if any(marker in category for marker in IR_LIGHT_CATEGORY_MARKERS):
+        return "light"
+    text = _ascii_fold(
+        " ".join(
+            [
+                actions[0].remote_name if actions else "",
+                category,
+                " ".join(action.action_name for action in actions),
+            ]
+        )
+    ).lower()
+    if any(marker in text for marker in IR_FAN_CATEGORY_MARKERS):
+        return "fan"
+    if any(marker in text for marker in IR_LIGHT_CATEGORY_MARKERS):
+        return "light"
+    if any(
+        marker in text
+        for marker in (
+            "tv",
+            "set top",
+            "stb",
+            "projector",
+            "audio",
+            "dvd",
+            "box",
+        )
+    ):
+        return "media_player"
+    return "button"
+
+
+def _ir_remote_brand_name(actions: list[TuyaIrAction]) -> str | None:
+    for action in actions:
+        raw = action.raw if isinstance(action.raw, dict) else {}
+        brand = raw.get("brandName")
+        if brand:
+            return str(brand)
+        remote = raw.get("remote")
+        if isinstance(remote, dict):
+            brand = remote.get("brandName") or remote.get("brand_name")
+            if brand:
+                return str(brand)
+    return None
+
+
+def _ir_remote_raw(actions: list[TuyaIrAction]) -> dict[str, Any]:
+    for action in actions:
+        raw = action.raw if isinstance(action.raw, dict) else {}
+        remote = raw.get("remote")
+        if isinstance(remote, dict):
+            return remote
+    return {}
+
+
 def _is_ir_climate_remote(actions: list[TuyaIrAction]) -> bool:
     if not actions:
         return False
+    if any(action.remote_kind == "climate" or action.dev_type_id == 5 for action in actions):
+        return True
     category = " ".join(action.category or "" for action in actions).lower()
     if any(marker in category for marker in IR_CLIMATE_CATEGORY_MARKERS):
         return True

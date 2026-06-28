@@ -48,6 +48,8 @@ SCENE_RULE_APIS = (
     ("thing.m.linkage.rule.simple.query", "4.0"),
 )
 SCENE_RULE_DETAIL_API = ("thing.m.linkage.rule.detail.find", "2.0")
+IR_GATEWAY_API = ("tuya.m.infrared.gateway.get", "1.0")
+IR_KEYDATA_API = ("tuya.m.infrared.keydata.get", "5.0")
 
 NO_POST_DATA = object()
 LOGIN_OPTIONS = '{"group": 1,"mfaCode": ""}'
@@ -61,6 +63,32 @@ IR_TEXT_MARKERS = (
     "irissue",
     "remoteid",
 )
+IR_SEND_DP_ID = "201"
+IR_VENDOR = "3"
+IR_DEV_TYPE_KIND = {
+    1: "media_player",
+    2: "media_player",
+    3: "media_player",
+    4: "media_player",
+    5: "climate",
+    6: "media_player",
+    7: "media_player",
+    8: "fan",
+    10: "light",
+    999: "button",
+}
+IR_DEV_TYPE_CATEGORY = {
+    1: "set_top_box",
+    2: "tv",
+    3: "tv_box",
+    4: "dvd",
+    5: "air",
+    6: "projector",
+    7: "audio",
+    8: "fan",
+    10: "light",
+    999: "diy",
+}
 HUB_ID_KEYS = (
     "gwId",
     "gatewayId",
@@ -775,7 +803,88 @@ class TuyaSmartLifeMobileApi:
                 action_devices,
             )
         )
+        actions.extend(self.list_home_infrared_keydata_actions(session, home, devices))
         return _dedupe_ir_actions(actions)
+
+    def list_infrared_gateway_remotes(
+        self,
+        session: TuyaSession,
+        home: TuyaHome,
+        hub: TuyaDeviceDescription,
+    ) -> list[dict[str, Any]]:
+        _, response = self.request(
+            *IR_GATEWAY_API,
+            {"gwId": hub.dev_id, "vender": IR_VENDOR},
+            sid=session.sid,
+            extra={"gid": home.id},
+        )
+        self._raise_for_response(response, f"IR gateway remotes for {hub.name}")
+        return _ir_gateway_remote_records(response.get("result"), hub.dev_id)
+
+    def get_infrared_keydata(
+        self,
+        session: TuyaSession,
+        home: TuyaHome,
+        remote: dict[str, Any],
+        hub_dev_id: str,
+    ) -> dict[str, Any] | None:
+        remote_id = _first_text(remote, ("remoteId", "remote_id", "devId", "dev_id"))
+        dev_type_id = _int_or_none(remote.get("devTypeId") or remote.get("dev_type_id"))
+        if not remote_id or dev_type_id is None:
+            return None
+        _, response = self.request(
+            *IR_KEYDATA_API,
+            {
+                "remoteId": remote_id,
+                "devTypeId": dev_type_id,
+                "gwId": remote.get("gwId") or hub_dev_id,
+                "vender": str(remote.get("vender") or IR_VENDOR),
+            },
+            sid=session.sid,
+            extra={"gid": home.id},
+        )
+        self._raise_for_response(response, f"IR keydata for {remote_id}")
+        result = response.get("result")
+        return result if isinstance(result, dict) else None
+
+    def list_home_infrared_keydata_actions(
+        self,
+        session: TuyaSession,
+        home: TuyaHome,
+        devices: list[TuyaDeviceDescription],
+    ) -> list[TuyaIrAction]:
+        actions: list[TuyaIrAction] = []
+        hubs = [device for device in devices if device.is_hub]
+        for hub in hubs:
+            try:
+                remotes = self.list_infrared_gateway_remotes(session, home, hub)
+            except TuyaMobileApiError as err:
+                _LOGGER.debug(
+                    "Unable to fetch Tuya IR gateway remotes for %s: %s",
+                    hub.dev_id,
+                    err,
+                )
+                continue
+            for remote in remotes:
+                try:
+                    keydata = self.get_infrared_keydata(
+                        session,
+                        home,
+                        remote,
+                        hub.dev_id,
+                    )
+                except TuyaMobileApiError as err:
+                    _LOGGER.debug(
+                        "Unable to fetch Tuya IR keydata for %s via %s: %s",
+                        remote.get("remoteId") or remote.get("devId"),
+                        hub.dev_id,
+                        err,
+                    )
+                    continue
+                if not keydata:
+                    continue
+                actions.extend(_ir_actions_from_keydata(home, hub, remote, keydata))
+        return actions
 
     def list_home_scene_ir_actions(
         self,
@@ -843,6 +952,229 @@ class TuyaSmartLifeMobileApi:
         code = response.get("errorCode") or response.get("code") or "unknown_error"
         msg = response.get("errorMsg") or response.get("msg") or response.get("status")
         raise TuyaMobileApiError(f"{context} failed: {code}: {msg}")
+
+
+def _ir_gateway_remote_records(value: Any, hub_dev_id: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, list):
+            for child in item:
+                collect(child)
+            return
+        if not isinstance(item, dict):
+            return
+        if item.get("remoteId") is not None or item.get("devTypeId") is not None:
+            record = dict(item)
+            record.setdefault("gwId", hub_dev_id)
+            records.append(record)
+            return
+        for key in (
+            "list",
+            "downloadList",
+            "remoteSubDevList",
+            "subDevList",
+            "ir",
+            "standby",
+            "user",
+            "rf",
+        ):
+            child = item.get(key)
+            if child is not None:
+                collect(child)
+
+    collect(value)
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        remote_id = str(
+            record.get("devId")
+            or record.get("subDevId")
+            or record.get("remoteId")
+            or ""
+        )
+        dev_type_id = str(record.get("devTypeId") or "")
+        key = (remote_id, dev_type_id)
+        if not remote_id or key in seen:
+            continue
+        seen.add(key)
+        unique.append(record)
+    return unique
+
+
+def _ir_actions_from_keydata(
+    home: TuyaHome,
+    hub: TuyaDeviceDescription,
+    remote: dict[str, Any],
+    keydata: dict[str, Any],
+) -> list[TuyaIrAction]:
+    remote_id = str(
+        remote.get("devId")
+        or remote.get("subDevId")
+        or remote.get("remoteId")
+        or remote.get("remote_id")
+    )
+    remote_name = str(
+        remote.get("devName")
+        or remote.get("name")
+        or remote.get("remoteName")
+        or remote_id
+    )
+    remote_code_id = str(remote.get("remoteId") or remote_id)
+    dev_type_id = _int_or_none(remote.get("devTypeId") or remote.get("dev_type_id"))
+    remote_kind = IR_DEV_TYPE_KIND.get(dev_type_id or -1, "button")
+    category = (
+        _first_text(remote, ("category", "categoryId", "devTypeName", "remoteType"))
+        or IR_DEV_TYPE_CATEGORY.get(dev_type_id or -1)
+    )
+    product_id = _first_text(remote, ("subProductId", "productId", "product_id", "pid"))
+    brand_name = _first_text(remote, ("brandName", "brand_name"))
+    head = str(keydata.get("head") or remote.get("head") or "")
+    keys = _ir_key_records(keydata)
+    actions: list[TuyaIrAction] = []
+    seen: set[str] = set()
+    for index, key in enumerate(keys):
+        compress = (
+            key.get("compressPulse")
+            or key.get("compress_pulse")
+            or key.get("key1")
+            or key.get("pulse")
+        )
+        if not compress:
+            continue
+        key_code = str(
+            key.get("key")
+            or key.get("keyCode")
+            or key.get("code")
+            or key.get("value")
+            or index
+        )
+        label = str(
+            key.get("keyName")
+            or key.get("name")
+            or key.get("label")
+            or _ir_key_label(key_code)
+            or key_code
+        )
+        command = {
+            "control": "send_ir",
+            "head": str(key.get("head") or head),
+            "key1": str(compress),
+            "type": int(key.get("type") or remote.get("type") or 0),
+            "delay": int(key.get("delay") or 300),
+        }
+        action_id = _slug(f"keydata_{remote_code_id}_{key_code}_{label}")
+        if action_id in seen:
+            action_id = _slug(f"{action_id}_{index}")
+        seen.add(action_id)
+        actions.append(
+            TuyaIrAction(
+                remote_id=remote_id,
+                remote_name=remote_name,
+                home_id=home.id,
+                home_name=home.name,
+                hub_dev_id=hub.dev_id,
+                action_id=action_id,
+                action_name=label,
+                action_dps={
+                    IR_SEND_DP_ID: json.dumps(
+                        command,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                },
+                report_dps=_ir_key_report_dps(key_code, label, dev_type_id),
+                product_id=product_id,
+                category=category,
+                remote_kind=remote_kind,
+                dev_type_id=dev_type_id,
+                raw={
+                    "source": "infrared_keydata",
+                    "remote": remote,
+                    "keydata": {
+                        key_: value
+                        for key_, value in keydata.items()
+                        if key_ not in {"keyCodeList", "remoteDeviceKeys", "keys"}
+                    },
+                    "key": key,
+                    "brandName": brand_name,
+                },
+            )
+        )
+    return actions
+
+
+def _ir_key_records(keydata: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if any(
+            value.get(key) is not None
+            for key in ("compressPulse", "compress_pulse", "key1", "pulse")
+        ):
+            records.append(value)
+            return
+        for key in (
+            "keyCodeList",
+            "remoteDeviceKeys",
+            "keys",
+            "keyList",
+            "modeKeys",
+            "singleAir",
+        ):
+            child = value.get(key)
+            if child is not None:
+                collect(child)
+
+    collect(keydata)
+    return records
+
+
+def _ir_key_report_dps(
+    key_code: str,
+    label: str,
+    dev_type_id: int | None,
+) -> dict[str, Any]:
+    text = f"{key_code} {label}".strip().lower()
+    if re.search(r"\b(power[_ -]?off|off|close|turn[_ -]?off)\b", text):
+        return {"101": False}
+    if re.search(r"\b(power[_ -]?on|on|open|turn[_ -]?on)\b", text):
+        return {"101": True}
+    if dev_type_id == 5:
+        match = re.search(r"M(?P<mode>\d+)_T(?P<temp>\d+)_S(?P<fan>\d+)", key_code)
+        if match:
+            return {
+                "101": True,
+                "102": match.group("mode"),
+                "103": int(match.group("temp")),
+                "104": match.group("fan"),
+            }
+        match = re.search(r"M(?P<mode>\d+)_S(?P<fan>\d+)", key_code)
+        if match:
+            return {
+                "101": True,
+                "102": match.group("mode"),
+                "104": match.group("fan"),
+            }
+    return {}
+
+
+def _ir_key_label(key_code: str) -> str:
+    text = key_code.replace("_", " ").replace("-", " ").strip()
+    return text.title() if text else ""
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _ir_actions_from_functions(
