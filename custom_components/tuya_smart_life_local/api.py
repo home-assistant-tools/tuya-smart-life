@@ -554,7 +554,7 @@ class TuyaSmartLifeMobileApi:
     ) -> list[dict[str, Any]]:
         last_response: dict[str, Any] | None = None
         for api, version in SCENE_RULE_APIS:
-            for payload in (NO_POST_DATA, {}, {"gid": home.id}):
+            for payload in ({"gid": home.id},):
                 _, response = self.request(
                     api,
                     version,
@@ -898,7 +898,12 @@ def _ir_actions_from_scene_rules(
             remote = devices_by_id.get(remote_id)
             ext = exts.get(remote_id)
             ext = ext if isinstance(ext, dict) else {}
-            hub_dev_id = _infer_ir_hub_id(remote, ext, hub_ids)
+            hub_dev_id = _infer_ir_hub_id(
+                remote,
+                ext,
+                hub_ids,
+                allow_fallback=False,
+            )
             if not hub_dev_id:
                 continue
 
@@ -1573,6 +1578,7 @@ def _infer_ir_hub_id(
     remote: TuyaDeviceDescription | None,
     ext: dict[str, Any],
     hub_ids: set[str],
+    allow_fallback: bool = True,
 ) -> str | None:
     if remote and remote.parent_dev_id:
         return remote.parent_dev_id
@@ -1591,9 +1597,9 @@ def _infer_ir_hub_id(
     for candidate in candidates:
         if candidate in hub_ids:
             return candidate
-    if candidates:
+    if candidates and allow_fallback:
         return candidates[0]
-    if len(hub_ids) == 1:
+    if len(hub_ids) == 1 and allow_fallback:
         return next(iter(hub_ids))
     return None
 
