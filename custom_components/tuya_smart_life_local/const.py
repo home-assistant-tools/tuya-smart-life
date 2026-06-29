@@ -7,6 +7,7 @@ PLATFORMS = [
     Platform.SWITCH,
     Platform.FAN,
     Platform.BINARY_SENSOR,
+    Platform.SENSOR,
     Platform.CLIMATE,
     Platform.LIGHT,
     Platform.MEDIA_PLAYER,

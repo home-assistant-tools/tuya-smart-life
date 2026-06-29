@@ -29,6 +29,12 @@ enter an `app_id`, `app_secret`, certificate fingerprint, or native signing key.
 - Create switch entities for button/gang DPS values from `dataPointInfo.dps`.
   If `dataPointInfo.dpName` contains labels, those labels are used; otherwise
   entities fall back to names such as `Button <dp_id>`.
+- Create binary sensors for Tuya contact/door sensors (`mcs`), PIR/motion
+  sensors, and presence/occupancy sensors (`hps`) using realtime local DPS
+  updates from the device or parent hub.
+- Create one text sensor for Tuya context/scene buttons (`wxkg`). The sensor
+  state is the last action in `<button>_<action>` form, for example `1_press`,
+  `1_double`, `1_long`, or `2_double`.
 - Create fan entities for recognized fan devices, for example devices with
   separate power and speed DPS values, and for supported IR fan remotes.
 - Create a diagnostic `Online` binary sensor for hubs so hubs still appear in
@@ -166,6 +172,22 @@ Some devices use boolean DP `1` as the power control for another domain, such
 as a fan. When a device is recognized as a fan, that power DP is exposed as a
 `fan` entity instead of a `switch`; auxiliary boolean DPS values such as a fan
 light can still be exposed as separate switches when Tuya returns them.
+
+## Sensors And Context Buttons
+
+The integration maps Tuya's common sensor categories in the same direction as
+tuya2matter:
+
+- `mcs`: contact/door binary sensor. Tuya's `doorcontact_state` is inverted so
+  Home Assistant is `on` when the door/window is open.
+- `hps`: occupancy/presence binary sensor.
+- PIR/motion devices: motion binary sensor when DPS/category/name metadata
+  identifies motion.
+- `wxkg`: one text sensor named `Action`. Its state is the last recognized
+  button action. Tuya values `single_click`, `double_click`, and `long_press`
+  are normalized to `press`, `double`, and `long`, so four-button devices can
+  report states such as `1_press`, `1_double`, `1_long`, `2_press`, and
+  `2_double`.
 
 ## IR Devices
 

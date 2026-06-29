@@ -85,6 +85,76 @@ IR_CLIMATE_ACTION_MARKERS = (
     "temperature",
     "wind",
 )
+BINARY_CONTACT_CATEGORY_MARKERS = ("mcs", "contact", "door", "window", "cuasensor")
+BINARY_MOTION_CATEGORY_MARKERS = ("pir", "motion", "movement", "body")
+BINARY_PRESENCE_CATEGORY_MARKERS = ("hps", "presence", "occupancy", "human", "radar")
+CONTACT_DP_MARKERS = ("doorcontact_state", "contact", "door", "window", "open")
+MOTION_DP_MARKERS = ("pir", "motion", "movement", "body")
+PRESENCE_DP_MARKERS = ("presence_state", "presence", "occupancy", "human", "radar")
+BINARY_AUX_DP_MARKERS = (
+    "battery",
+    "bright",
+    "humidity",
+    "illuminance",
+    "lux",
+    "tamper",
+    "temp",
+    "voltage",
+)
+BINARY_PRIMARY_DP_IDS = {"1", "101"}
+CONTEXT_BUTTON_CATEGORY_MARKERS = (
+    "wxkg",
+    "scene",
+    "button",
+    "switch",
+    "remote",
+    "context",
+    "ngu canh",
+    "nut",
+)
+CONTEXT_BUTTON_VALUES = {
+    "single_click": "press",
+    "single": "press",
+    "press": "press",
+    "click": "press",
+    "single_press": "press",
+    "double_click": "double",
+    "double": "double",
+    "double_press": "double",
+    "long_press": "long",
+    "long": "long",
+    "hold": "long",
+    "long_click": "long",
+}
+CONTEXT_BUTTON_IDLE_VALUES = {"scene", "", "none", "idle", "released"}
+BINARY_ON_VALUES = {
+    "1",
+    "alarm",
+    "detected",
+    "motion",
+    "movement",
+    "occupied",
+    "on",
+    "open",
+    "opened",
+    "pir",
+    "present",
+    "presence",
+    "true",
+}
+BINARY_OFF_VALUES = {
+    "0",
+    "clear",
+    "close",
+    "closed",
+    "false",
+    "no_motion",
+    "none",
+    "not_present",
+    "off",
+    "standby",
+    "vacant",
+}
 
 
 class _DiscoveryProtocol(asyncio.DatagramProtocol):
@@ -703,10 +773,50 @@ class TuyaLocalRuntime:
             for dp_id, value in device.dps.items():
                 if _is_fan_device(device) and str(dp_id) == FAN_POWER_DP_ID:
                     continue
+                if _binary_sensor_kind(device, str(dp_id)):
+                    continue
                 if isinstance(value, bool) and _is_switch_button_dp(device, dp_id):
                     items.append(
                         (device, dp_id, value, _switch_button_label(device, dp_id))
                     )
+        return items
+
+    def binary_sensor_dps(
+        self,
+    ) -> list[tuple[TuyaDeviceDescription, str, bool, str, str]]:
+        items: list[tuple[TuyaDeviceDescription, str, bool, str, str]] = []
+        for device in self.devices.values():
+            if not device.local_controllable or device.is_hub:
+                continue
+            for dp_id, value in device.dps.items():
+                kind = _binary_sensor_kind(device, dp_id)
+                if not kind:
+                    continue
+                state = _normalize_binary_sensor_value(value, kind)
+                if state is None:
+                    continue
+                items.append(
+                    (
+                        device,
+                        str(dp_id),
+                        state,
+                        kind,
+                        _binary_sensor_label(device, dp_id, kind),
+                    )
+                )
+        return items
+
+    def context_button_sensors(
+        self,
+    ) -> list[tuple[TuyaDeviceDescription, str | None, list[str]]]:
+        items: list[tuple[TuyaDeviceDescription, str | None, list[str]]] = []
+        for device in self.devices.values():
+            if not device.local_controllable or device.is_hub:
+                continue
+            channels = _context_button_channels(device)
+            if not channels:
+                continue
+            items.append((device, _context_button_state(device), channels))
         return items
 
     def fan_devices(self) -> list[TuyaDeviceDescription]:
@@ -1492,6 +1602,180 @@ def _is_fan_device(device: TuyaDeviceDescription) -> bool:
 def _ascii_fold(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value)
     return normalized.encode("ascii", "ignore").decode("ascii")
+
+
+def _device_text(device: TuyaDeviceDescription) -> str:
+    raw = device.raw if isinstance(device.raw, dict) else {}
+    values: list[str] = [
+        device.name,
+        device.product_id or "",
+        str(raw.get("category") or ""),
+        str(raw.get("categoryCode") or ""),
+        str(raw.get("category_code") or ""),
+        str(raw.get("productType") or ""),
+        str(raw.get("iconUrl") or ""),
+    ]
+    product_info = raw.get("productInfo")
+    if isinstance(product_info, dict):
+        values.extend(
+            str(product_info.get(key) or "")
+            for key in ("category", "categoryCode", "category_code", "name")
+        )
+    return _ascii_fold(" ".join(values)).lower()
+
+
+def _dp_text(device: TuyaDeviceDescription, dp_id: str) -> str:
+    return _ascii_fold(
+        " ".join(
+            (
+                str(dp_id),
+                device.dp_names.get(str(dp_id), ""),
+                str(device.dps.get(str(dp_id), "")),
+            )
+        )
+    ).lower()
+
+
+def _has_any_marker(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def _binary_sensor_kind(device: TuyaDeviceDescription, dp_id: str) -> str | None:
+    device_text = _device_text(device)
+    dp_text = _dp_text(device, str(dp_id))
+    if "doorcontact_state" in dp_text:
+        return "door"
+    if "presence_state" in dp_text:
+        return "occupancy"
+    if _has_any_marker(dp_text, CONTACT_DP_MARKERS):
+        return "door"
+    if _has_any_marker(dp_text, PRESENCE_DP_MARKERS):
+        return "occupancy"
+    if _has_any_marker(dp_text, MOTION_DP_MARKERS):
+        return "motion"
+    if _has_any_marker(dp_text, BINARY_AUX_DP_MARKERS):
+        return None
+    if str(dp_id) not in BINARY_PRIMARY_DP_IDS:
+        return None
+    if _has_any_marker(device_text, BINARY_CONTACT_CATEGORY_MARKERS):
+        return "door"
+    if _has_any_marker(device_text, BINARY_PRESENCE_CATEGORY_MARKERS):
+        return "occupancy"
+    if _has_any_marker(device_text, BINARY_MOTION_CATEGORY_MARKERS):
+        return "motion"
+    return None
+
+
+def _normalize_binary_sensor_value(value: Any, kind: str) -> bool | None:
+    if isinstance(value, bool):
+        if kind == "door":
+            # Tuya mcs doorcontact_state reports True when closed.
+            return not value
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = _ascii_fold(str(value)).strip().lower()
+    if kind == "door":
+        if text in {"true", "closed", "close"}:
+            return False
+        if text in {"false", "open", "opened"}:
+            return True
+    if text in BINARY_ON_VALUES:
+        return True
+    if text in BINARY_OFF_VALUES:
+        return False
+    return None
+
+
+def _binary_sensor_label(
+    device: TuyaDeviceDescription,
+    dp_id: str,
+    kind: str,
+) -> str:
+    name = device.dp_names.get(str(dp_id), "").strip()
+    if name:
+        return name
+    if kind == "door":
+        return "Door"
+    if kind == "motion":
+        return "Motion"
+    if kind == "occupancy":
+        return "Occupancy"
+    return f"Sensor {dp_id}"
+
+
+def _is_context_button_device(device: TuyaDeviceDescription) -> bool:
+    text = _device_text(device)
+    if _has_any_marker(text, CONTEXT_BUTTON_CATEGORY_MARKERS):
+        return True
+    for dp_id, value in device.dps.items():
+        if _context_button_press_type(value):
+            return True
+        dp_text = _dp_text(device, str(dp_id))
+        if any(part in dp_text for part in ("single", "double", "long", "press")):
+            return True
+    return False
+
+
+def _context_button_channels(device: TuyaDeviceDescription) -> list[str]:
+    if not _is_context_button_device(device):
+        return []
+    channels: list[str] = []
+    for dp_id, value in sorted(device.dps.items(), key=lambda item: _dp_sort_key(item[0])):
+        channel = _context_button_channel(device, str(dp_id))
+        if not channel:
+            continue
+        value_text = _ascii_fold(str(value)).strip().lower()
+        if (
+            _context_button_press_type(value)
+            or value_text in CONTEXT_BUTTON_IDLE_VALUES
+            or "scene" in _dp_text(device, str(dp_id))
+            or any(part in _dp_text(device, str(dp_id)) for part in ("single", "double", "long", "press"))
+        ):
+            if channel not in channels:
+                channels.append(channel)
+    return channels
+
+
+def _context_button_channel(
+    device: TuyaDeviceDescription,
+    dp_id: str,
+) -> str | None:
+    name = device.dp_names.get(str(dp_id), "")
+    text = _ascii_fold(name).lower()
+    for token in text.replace("_", " ").replace("-", " ").split():
+        if token.isdecimal():
+            return token
+    return str(dp_id) if str(dp_id).isdecimal() and int(dp_id) < 100 else None
+
+
+def _context_button_state(device: TuyaDeviceDescription) -> str | None:
+    for dp_id, value in sorted(device.dps.items(), key=lambda item: _dp_sort_key(item[0])):
+        press_type = _context_button_press_type(value)
+        if not press_type:
+            continue
+        channel = _context_button_channel(device, str(dp_id))
+        if channel:
+            return f"{channel}_{press_type}"
+    return None
+
+
+def _context_button_press_type(value: Any) -> str | None:
+    text = _ascii_fold(str(value)).strip().lower().replace("-", "_").replace(" ", "_")
+    if text in CONTEXT_BUTTON_VALUES:
+        return CONTEXT_BUTTON_VALUES[text]
+    if "double" in text:
+        return "double"
+    if "long" in text or "hold" in text:
+        return "long"
+    if "single" in text or "press" in text or "click" in text:
+        return "press"
+    return None
+
+
+def _dp_sort_key(dp_id: Any) -> tuple[int, str]:
+    text = str(dp_id)
+    return (int(text), text) if text.isdecimal() else (9999, text)
 
 
 def _is_switch_button_dp(device: TuyaDeviceDescription, dp_id: str) -> bool:

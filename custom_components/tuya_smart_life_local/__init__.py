@@ -104,6 +104,14 @@ def _remove_stale_registry_entries(
         f"{device.dev_id}_online" for device in local_runtime.hub_devices()
     )
     active_unique_ids.update(
+        f"{device.dev_id}_{dp_id}_{kind}"
+        for device, dp_id, _, kind, _ in local_runtime.binary_sensor_dps()
+    )
+    active_unique_ids.update(
+        f"{device.dev_id}_action"
+        for device, _, _ in local_runtime.context_button_sensors()
+    )
+    active_unique_ids.update(
         action.unique_id for action in local_runtime.ir_action_buttons()
     )
     active_unique_ids.update(
