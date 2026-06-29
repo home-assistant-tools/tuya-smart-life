@@ -1037,7 +1037,7 @@ class TuyaLocalRuntime:
             raise RuntimeError(f"IR hub {action.hub_dev_id} is no longer available")
         self._release_state_stream_for_command(hub.dev_id)
         response = self._publish_ir_dps_once(action)
-        if _is_key_or_version_error(response):
+        if _is_key_or_version_error(response) or _is_unexpected_payload_error(response):
             self._tinytuya_devices.pop(hub.dev_id, None)
             response = self._publish_ir_dps_once(action)
         return response
@@ -1398,6 +1398,16 @@ def _is_key_or_version_error(response: Any) -> bool:
         for key in ("Error", "Err", "error", "message", "Payload")
     ).lower()
     return "key or version" in text
+
+
+def _is_unexpected_payload_error(response: Any) -> bool:
+    if not isinstance(response, dict):
+        return False
+    text = " ".join(
+        str(response.get(key) or "")
+        for key in ("Error", "Err", "error", "message", "Payload")
+    ).lower()
+    return "unexpected payload" in text
 
 
 def _call_tinytuya_writer(method: Any, *args: Any, nowait: bool) -> Any:
