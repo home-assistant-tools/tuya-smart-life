@@ -231,11 +231,11 @@ class TuyaIrClimateEntity(
         climate = self.current_climate
         if not climate:
             raise RuntimeError(f"IR climate {self.climate.unique_id} is no longer available")
-        action = _schema_climate_action(climate, desired) or _find_climate_action(
+        action = _find_climate_action(
             climate.actions,
             desired,
             primary,
-        )
+        ) or _schema_climate_action(climate, desired)
         if not action:
             raise RuntimeError(
                 f"No Tuya IR action matched {primary}={desired.get(primary)} "
