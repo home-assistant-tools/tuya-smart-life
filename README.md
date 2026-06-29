@@ -115,6 +115,9 @@ If Tuya returns a stale mobile API domain after login, the integration retries
 the same request against the known Smart Life/Tuya Smart mobile endpoints
 instead of failing setup on an HTTP `404` from `/api.json`.
 
+IR key data from Tuya's keydata API is normalized to the same `key1` pulse
+format used by the Tuya app panel before publishing DP `201` to the hub.
+
 ## How Local Control Works
 
 The mobile/cloud API is used only for metadata:

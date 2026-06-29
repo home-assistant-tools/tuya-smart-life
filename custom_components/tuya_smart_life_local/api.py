@@ -1093,7 +1093,7 @@ def _ir_actions_from_keydata(
         command = {
             "control": "send_ir",
             "head": str(key.get("head") or head),
-            "key1": str(compress),
+            "key1": _ir_command_key1(compress),
             "type": int(key.get("type") or remote.get("type") or 0),
             "delay": int(key.get("delay") or 300),
         }
@@ -1168,6 +1168,14 @@ def _ir_key_records(keydata: dict[str, Any]) -> list[dict[str, Any]]:
 
     collect(keydata)
     return records
+
+
+def _ir_command_key1(value: Any) -> str:
+    text = str(value)
+    prefix, marker, suffix = text.partition("&%")
+    if not marker or not prefix.isdecimal() or len(prefix) >= 3:
+        return text
+    return f"{prefix.zfill(3)}{marker}{suffix}"
 
 
 def _ir_key_report_dps(
