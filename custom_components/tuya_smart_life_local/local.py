@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import Any
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from .models import TuyaDeviceDescription, TuyaIrAction, TuyaIrClimate, TuyaIrRemote
 
@@ -24,11 +25,14 @@ STATE_STREAM_TIMEOUT_SECONDS = 10
 STATE_STREAM_RECONNECT_SECONDS = 5
 STATE_STREAM_HEARTBEAT_SECONDS = 10
 STATE_STREAM_REFRESH_DP_IDS = [4, 5, 6, 18, 19, 20]
+LOCAL_CACHE_VERSION = 1
+LOCAL_CACHE_KEY = "tuya_smart_life_local.local_cache"
 SWITCH_BUTTON_DP_IDS = {str(dp_id) for dp_id in range(1, 9)}
 FAN_PRODUCT_IDS = {"tqfl5ws2csdtdaak"}
 FAN_POWER_DP_ID = "1"
 FAN_SPEED_DP_ID = "3"
-CHILD_PROTOCOL_FALLBACKS = ("3.4", "3.5", "3.3")
+CHILD_PROTOCOL_FALLBACKS = ("3.5", "3.4", "3.3")
+IR_HUB_DEFAULT_PROTOCOL_VERSION = "3.5"
 NO_FALLBACK_RESPONSE = object()
 BROADCAST_DEVICE_ID_KEYS = ("devId", "deviceId", "device_id", "id", "gwId")
 BROADCAST_NODE_ID_KEYS = (
@@ -99,6 +103,12 @@ class TuyaLocalRuntime:
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
+        self._store = Store(
+            hass,
+            LOCAL_CACHE_VERSION,
+            LOCAL_CACHE_KEY,
+        )
+        self._local_cache: dict[str, dict[str, Any]] = {}
         self.devices: dict[str, TuyaDeviceDescription] = {}
         self.ir_actions: dict[str, TuyaIrAction] = {}
         self.transports: list[asyncio.DatagramTransport] = []
@@ -115,6 +125,15 @@ class TuyaLocalRuntime:
     async def async_start(self) -> None:
         if self.transports:
             return
+        stored = await self._store.async_load()
+        if isinstance(stored, dict):
+            raw_devices = stored.get("devices")
+            if isinstance(raw_devices, dict):
+                self._local_cache = {
+                    str(dev_id): metadata
+                    for dev_id, metadata in raw_devices.items()
+                    if isinstance(metadata, dict)
+                }
         for port in DISCOVERY_PORTS:
             try:
                 transport, _ = await self._create_udp_endpoint(port)
@@ -241,6 +260,15 @@ class TuyaLocalRuntime:
 
         # Preserve broadcast-discovered IP/version across cloud metadata refreshes.
         for device in devices:
+            cached = self._local_cache.get(device.dev_id, {})
+            cached_ip = _lan_ip(cached.get("ip"))
+            if cached_ip and not _is_lan_ip(device.ip):
+                device.ip = cached_ip
+            cached_version = _valid_protocol_version(cached.get("protocol_version"))
+            if cached_version and not device.protocol_version:
+                device.protocol_version = cached_version
+            if device.is_hub and not device.protocol_version:
+                device.protocol_version = IR_HUB_DEFAULT_PROTOCOL_VERSION
             old = existing.get(device.dev_id)
             if old:
                 if _is_lan_ip(old.ip) and old.ip != device.ip:
@@ -256,6 +284,7 @@ class TuyaLocalRuntime:
         self.devices = next_devices
         self._tinytuya_devices.clear()
         self._ensure_state_stream_tasks()
+        self._save_local_cache()
 
     def update_ir_actions(self, actions: list[TuyaIrAction]) -> None:
         self.ir_actions = {action.unique_id: action for action in actions}
@@ -615,6 +644,27 @@ class TuyaLocalRuntime:
                 device.protocol_version,
             )
             self._ensure_state_stream_tasks()
+            self._save_local_cache()
+
+    def _save_local_cache(self) -> None:
+        devices: dict[str, dict[str, str]] = {}
+        for dev_id, device in self.devices.items():
+            metadata: dict[str, str] = {}
+            ip = _lan_ip(device.ip)
+            if ip:
+                metadata["ip"] = ip
+            version = _valid_protocol_version(device.protocol_version)
+            if version:
+                metadata["protocol_version"] = version
+            if metadata:
+                devices[dev_id] = metadata
+        if devices == self._local_cache:
+            return
+        self._local_cache = devices
+        self.hass.loop.call_soon_threadsafe(
+            self.hass.async_create_task,
+            self._store.async_save({"devices": devices}),
+        )
 
     def _broadcast_device(
         self,
@@ -897,6 +947,17 @@ class TuyaLocalRuntime:
             action.remote_id,
             normalized_dps,
         )
+        # IR hubs accept the app's DP 201 payload reliably through individual writes.
+        # Some hubs acknowledge multi-DP writes without actually emitting IR.
+        if set(normalized_dps) == {"201"}:
+            if hasattr(device, "set_value"):
+                return _call_tinytuya_writer(
+                    device.set_value,
+                    201,
+                    normalized_dps["201"],
+                    nowait=False,
+                )
+            return device.set_status(normalized_dps["201"], switch=201)
         if hasattr(device, "set_multiple_values"):
             return _call_tinytuya_writer(
                 device.set_multiple_values,
