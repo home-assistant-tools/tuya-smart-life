@@ -48,13 +48,13 @@ HVAC_MODE_LABELS = {
 FAN_MODE_VALUES = {
     FAN_AUTO: {"0", "auto"},
     FAN_LOW: {"1", "low"},
-    FAN_MEDIUM: {"2", "medium", "mid"},
+    FAN_MEDIUM: {"2", "medium", "middle", "mid"},
     FAN_HIGH: {"3", "high"},
 }
 FAN_MODE_LABELS = {
     FAN_AUTO: ("auto", "automatic"),
     FAN_LOW: ("low", "small", "thap"),
-    FAN_MEDIUM: ("medium", "mid", "vua"),
+    FAN_MEDIUM: ("medium", "middle", "mid", "vua"),
     FAN_HIGH: ("high", "cao", "strong"),
 }
 FIELD_ALIASES = {
@@ -140,7 +140,7 @@ class TuyaIrClimateEntity(
         if not climate:
             return False
         hub = self.runtime.local.devices.get(climate.hub_dev_id)
-        return bool(hub and hub.ip and hub.local_key) and self._local_ok is not False
+        return bool(hub and hub.ip and hub.local_key)
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -231,37 +231,54 @@ class TuyaIrClimateEntity(
         climate = self.current_climate
         if not climate:
             raise RuntimeError(f"IR climate {self.climate.unique_id} is no longer available")
-        action = _find_climate_action(
-            climate.actions,
-            desired,
-            primary,
-        ) or _schema_climate_action(climate, desired)
-        if not action:
+        actions = [
+            action
+            for action in (
+                _find_climate_action(climate.actions, desired, primary),
+                _schema_climate_action(climate, desired),
+            )
+            if action
+        ]
+        if not actions:
             raise RuntimeError(
                 f"No Tuya IR action matched {primary}={desired.get(primary)} "
                 f"for {climate.remote_name}"
             )
-        try:
-            response = await self.runtime.local.async_publish_ir_action(action)
-        except Exception as err:
-            self._local_ok = False
-            self._async_write_state_if_added()
-            raise RuntimeError(
-                f"Unable to publish Tuya IR climate action {action.action_name}: {err}"
-            ) from err
-        if isinstance(response, dict) and response.get("Error"):
-            self._local_ok = False
-            self._async_write_state_if_added()
-            raise RuntimeError(
-                f"Unable to publish Tuya IR climate action {action.action_name}: "
-                f"{response.get('Error')}"
+
+        last_error: str | None = None
+        for action in actions:
+            try:
+                response = await self.runtime.local.async_publish_ir_action(action)
+            except Exception as err:
+                last_error = f"{action.action_name}: {err}"
+                _LOGGER.debug(
+                    "Unable to publish Tuya IR climate action %s; trying fallback",
+                    action.action_name,
+                    exc_info=True,
+                )
+                continue
+            if isinstance(response, dict) and response.get("Error"):
+                last_error = f"{action.action_name}: {response.get('Error')}"
+                _LOGGER.debug(
+                    "Tuya IR climate action %s failed with response %s; trying fallback",
+                    action.action_name,
+                    response,
+                )
+                continue
+            self._local_ok = True
+            _LOGGER.debug(
+                "Published Tuya IR climate action %s via hub %s: %s",
+                action.action_name,
+                climate.hub_dev_id,
+                response,
             )
-        self._local_ok = True
-        _LOGGER.debug(
-            "Published Tuya IR climate action %s via hub %s: %s",
-            action.action_name,
-            climate.hub_dev_id,
-            response,
+            return
+
+        self._local_ok = False
+        self._async_write_state_if_added()
+        raise RuntimeError(
+            f"Unable to publish Tuya IR climate action for {climate.remote_name}: "
+            f"{last_error or 'unknown error'}"
         )
 
     def _async_write_state_if_added(self) -> None:
