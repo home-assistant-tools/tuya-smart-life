@@ -330,12 +330,26 @@ def _find_climate_action(
 ) -> TuyaIrAction | None:
     best_action: TuyaIrAction | None = None
     best_score = -1
+    best_priority = -1
     for action in actions:
         score = _score_action(action, desired, primary)
-        if score > best_score:
+        priority = _action_priority(action)
+        if score > best_score or (score == best_score and priority > best_priority):
             best_score = score
+            best_priority = priority
             best_action = action
     return best_action if best_score > 0 else None
+
+
+def _action_priority(action: TuyaIrAction) -> int:
+    priority = 0
+    if "201" in {str(dp_id) for dp_id in action.action_dps}:
+        priority += 20
+    if str(action.action_id).startswith("keydata_"):
+        priority += 10
+    if _ir_action_schema_kind(action) == "climate":
+        priority -= 10
+    return priority
 
 
 def _schema_climate_action(
