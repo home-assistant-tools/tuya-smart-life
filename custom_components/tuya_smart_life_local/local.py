@@ -1038,8 +1038,23 @@ class TuyaLocalRuntime:
         self._release_state_stream_for_command(hub.dev_id)
         response = self._publish_ir_dps_once(action)
         if _is_key_or_version_error(response) or _is_unexpected_payload_error(response):
+            _LOGGER.debug(
+                "Retrying Tuya IR action %s via hub %s after response %s",
+                action.action_name,
+                action.hub_dev_id,
+                response,
+            )
             self._tinytuya_devices.pop(hub.dev_id, None)
             response = self._publish_ir_dps_once(action)
+        if _is_unexpected_payload_error(response):
+            _LOGGER.warning(
+                "Tuya IR hub %s returned an unexpected payload after publishing %s; "
+                "treating the fire-and-forget IR command as sent: %s",
+                action.hub_dev_id,
+                action.action_name,
+                response,
+            )
+            return None
         return response
 
     def _publish_ir_dps_once(self, action: TuyaIrAction) -> Any:
@@ -1065,9 +1080,14 @@ class TuyaLocalRuntime:
                     device.set_value,
                     201,
                     normalized_dps["201"],
-                    nowait=False,
+                    nowait=True,
                 )
-            return device.set_status(normalized_dps["201"], switch=201)
+            return _call_tinytuya_writer(
+                device.set_status,
+                normalized_dps["201"],
+                switch=201,
+                nowait=True,
+            )
         if hasattr(device, "set_multiple_values"):
             return _call_tinytuya_writer(
                 device.set_multiple_values,
@@ -1410,11 +1430,11 @@ def _is_unexpected_payload_error(response: Any) -> bool:
     return "unexpected payload" in text
 
 
-def _call_tinytuya_writer(method: Any, *args: Any, nowait: bool) -> Any:
+def _call_tinytuya_writer(method: Any, *args: Any, nowait: bool, **kwargs: Any) -> Any:
     try:
-        return method(*args, nowait=nowait)
+        return method(*args, nowait=nowait, **kwargs)
     except TypeError:
-        return method(*args)
+        return method(*args, **kwargs)
 
 
 def _ir_action_schema_kind(action: TuyaIrAction) -> str | None:
