@@ -64,7 +64,6 @@ class TuyaSmartLifeCoordinator(DataUpdateCoordinator[TuyaSmartLifeData]):
 
         self.runtime.update_devices(devices)
         self.runtime.update_ir_actions(ir_actions)
-        await self.runtime.async_scan_once()
         return TuyaSmartLifeData(
             homes=homes,
             devices=devices,
