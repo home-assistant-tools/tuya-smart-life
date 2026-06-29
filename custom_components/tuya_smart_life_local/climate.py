@@ -347,7 +347,8 @@ def _action_priority(action: TuyaIrAction) -> int:
         priority += 20
     if str(action.action_id).startswith("keydata_"):
         priority += 10
-    if _ir_action_schema_kind(action) == "climate":
+    schema = action.raw.get("schema") if isinstance(action.raw, dict) else None
+    if isinstance(schema, dict) and schema.get("kind") == "climate":
         priority -= 10
     return priority
 
