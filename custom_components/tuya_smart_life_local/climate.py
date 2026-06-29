@@ -332,6 +332,8 @@ def _find_climate_action(
     best_score = -1
     best_priority = -1
     for action in actions:
+        if _is_schema_action(action):
+            continue
         score = _score_action(action, desired, primary)
         priority = _action_priority(action)
         if score > best_score or (score == best_score and priority > best_priority):
@@ -351,6 +353,11 @@ def _action_priority(action: TuyaIrAction) -> int:
     if isinstance(schema, dict) and schema.get("kind") == "climate":
         priority -= 10
     return priority
+
+
+def _is_schema_action(action: TuyaIrAction) -> bool:
+    schema = action.raw.get("schema") if isinstance(action.raw, dict) else None
+    return isinstance(schema, dict) and schema.get("kind") == "climate"
 
 
 def _schema_climate_action(
