@@ -108,8 +108,12 @@ domain/region information returned by Tuya after login when available.
 
 After changing the selected home list in integration options, the integration
 reloads so Home Assistant can clean up and recreate the correct registry
-entries. If you are upgrading from a version older than `0.1.36`, reload or
+entries. If you are upgrading from a version older than `0.1.37`, reload or
 restart Home Assistant after updating.
+
+If Tuya returns a stale mobile API domain after login, the integration retries
+the same request against the known Smart Life/Tuya Smart mobile endpoints
+instead of failing setup on an HTTP `404` from `/api.json`.
 
 ## How Local Control Works
 

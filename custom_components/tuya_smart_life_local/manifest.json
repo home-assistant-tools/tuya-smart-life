@@ -9,5 +9,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/home-assistant-tools/tuya-smart-life/issues",
   "requirements": ["tinytuya==1.18.1"],
-  "version": "0.1.36"
+  "version": "0.1.37"
 }

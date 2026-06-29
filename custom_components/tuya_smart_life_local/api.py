@@ -320,6 +320,9 @@ class TuyaSmartLifeMobileApi:
         ]
         return list(dict.fromkeys(endpoints))
 
+    def _request_endpoint_candidates(self) -> list[str]:
+        return list(dict.fromkeys([self.endpoint, *self._endpoint_candidates()]))
+
     def _native_key(self) -> bytes:
         if self.config.native_key_text:
             return self.config.native_key_text.encode()
@@ -376,25 +379,56 @@ class TuyaSmartLifeMobileApi:
             params.update(extra)
 
         params["sign"] = request_sign(build_sign_input(params), self.native_key)
-        request = urllib.request.Request(
-            self.endpoint,
-            data=urllib.parse.urlencode(params).encode(),
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": f"ThingSmart/{self.config.app_version} Android",
-                "Accept-Encoding": "identity",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                return response.status, json.loads(response.read().decode(errors="replace"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace")
+        encoded_params = urllib.parse.urlencode(params).encode()
+        last_error: TuyaMobileApiError | None = None
+        endpoints = self._request_endpoint_candidates()
+        for index, endpoint in enumerate(endpoints):
+            request = urllib.request.Request(
+                endpoint,
+                data=encoded_params,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": f"ThingSmart/{self.config.app_version} Android",
+                    "Accept-Encoding": "identity",
+                },
+                method="POST",
+            )
             try:
-                return exc.code, json.loads(body)
-            except json.JSONDecodeError as err:
-                raise TuyaMobileApiError(body) from err
+                with urllib.request.urlopen(request, timeout=20) as response:
+                    body = response.read().decode(errors="replace")
+                    self.endpoint = endpoint
+                    return response.status, json.loads(body)
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode(errors="replace")
+                if exc.code == 404 and index < len(endpoints) - 1:
+                    _LOGGER.debug(
+                        "Tuya mobile endpoint %s returned HTTP 404 for %s v%s; "
+                        "trying fallback endpoint",
+                        endpoint,
+                        api,
+                        version,
+                    )
+                    last_error = TuyaMobileApiError(body or f"HTTP {exc.code}")
+                    continue
+                try:
+                    self.endpoint = endpoint
+                    return exc.code, json.loads(body)
+                except json.JSONDecodeError as err:
+                    raise TuyaMobileApiError(body) from err
+            except urllib.error.URLError as err:
+                last_error = TuyaMobileApiError(str(err))
+                if index < len(endpoints) - 1:
+                    _LOGGER.debug(
+                        "Tuya mobile endpoint %s failed for %s v%s: %s; "
+                        "trying fallback endpoint",
+                        endpoint,
+                        api,
+                        version,
+                        err,
+                    )
+                    continue
+                raise last_error from err
+        raise last_error or TuyaMobileApiError("Tuya mobile request failed")
 
     def login(self) -> TuyaSession:
         last_error: TuyaMobileApiError | None = None
