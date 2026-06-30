@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -179,15 +180,15 @@ class TuyaIrClimateEntity(
 
     async def async_turn_on(self) -> None:
         mode = self._hvac_mode if self._hvac_mode != HVACMode.OFF else HVACMode.COOL
-        await self._async_send(
-            {
-                "power": True,
-                "mode": mode,
-                "temp": self._target_temperature,
-                "fan": self._fan_mode,
-            },
-            "power",
-        )
+        desired = {
+            "power": True,
+            "mode": mode,
+            "temp": self._target_temperature,
+            "fan": self._fan_mode,
+        }
+        await self._async_send({"power": True}, "power")
+        await asyncio.sleep(1)
+        await self._async_send(desired, "mode")
         self._is_on = True
         self._hvac_mode = mode
         self.async_write_ha_state()
