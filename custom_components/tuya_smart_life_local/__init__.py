@@ -117,6 +117,9 @@ def _remove_stale_registry_entries(
     active_unique_ids.update(
         climate.unique_id for climate in local_runtime.ir_climates()
     )
+    active_unique_ids.update(
+        f"{device.dev_id}_ir_remote" for device in local_runtime.ir_hub_devices()
+    )
     entity_registry = er.async_get(hass)
     for entity in list(entity_registry.entities.values()):
         if entity.platform != DOMAIN or entity.config_entry_id != entry.entry_id:
@@ -135,6 +138,9 @@ def _remove_stale_registry_entries(
     active_device_ids.update(remote.remote_id for remote in local_runtime.ir_lights())
     active_device_ids.update(
         remote.remote_id for remote in local_runtime.ir_media_players()
+    )
+    active_device_ids.update(
+        device.dev_id for device in local_runtime.ir_hub_devices()
     )
     device_registry = dr.async_get(hass)
     remove_device = getattr(device_registry, "async_remove_device", None)

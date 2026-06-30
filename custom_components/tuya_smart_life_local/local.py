@@ -74,6 +74,9 @@ IR_FAN_CATEGORY_MARKERS = ("fan", "quat")
 IR_LIGHT_CATEGORY_MARKERS = ("light", "den")
 IR_MEDIA_REMOTE_KINDS = {"media_player"}
 IR_BUTTON_REMOTE_KINDS = {"button", "unknown"}
+IR_SEND_DP_ID = "201"
+IR_RECEIVE_DP_ID = "202"
+IR_LEARN_TIMEOUT_SECONDS = 30
 IR_CLIMATE_ACTION_MARKERS = (
     "cool",
     "dry",
@@ -394,10 +397,11 @@ class TuyaLocalRuntime:
 
     def _state_stream_device_ids(self) -> set[str]:
         ids: set[str] = set()
+        ir_hub_ids = {action.hub_dev_id for action in self.ir_actions.values()}
         for device in self.devices.values():
             if device.is_hub and not any(
                 child.parent_dev_id == device.dev_id for child in self.devices.values()
-            ):
+            ) and device.dev_id not in ir_hub_ids and not _looks_like_ir_hub(device):
                 continue
             if device.is_child:
                 stream_dev_id = device.parent_dev_id
@@ -829,6 +833,15 @@ class TuyaLocalRuntime:
     def hub_devices(self) -> list[TuyaDeviceDescription]:
         return [device for device in self.devices.values() if device.is_hub]
 
+    def ir_hub_devices(self) -> list[TuyaDeviceDescription]:
+        hub_ids = {action.hub_dev_id for action in self.ir_actions.values()}
+        hubs = [
+            device
+            for device in self.devices.values()
+            if device.is_hub and (device.dev_id in hub_ids or _looks_like_ir_hub(device))
+        ]
+        return sorted(hubs, key=lambda device: (device.home_name, device.name))
+
     def boolean_dps(self) -> list[tuple[TuyaDeviceDescription, str, bool]]:
         return [
             (device, dp_id, value)
@@ -932,6 +945,89 @@ class TuyaLocalRuntime:
                 self._publish_ir_action,
                 action,
             )
+
+    async def async_send_ir_code(
+        self,
+        hub: TuyaDeviceDescription,
+        code: str,
+        *,
+        delay_ms: int = 300,
+    ) -> Any:
+        payload = {
+            "control": "send_ir",
+            "head": "",
+            # Tuya learned IR codes are sent with a non-zero leading marker.
+            # Hubs discard the marker and use the remaining base64 pulse data.
+            "key1": f"1{code}",
+            "type": 0,
+            "delay": int(delay_ms),
+        }
+        return await self.async_send_ir_payload(hub, payload)
+
+    async def async_send_ir_payload(
+        self,
+        hub: TuyaDeviceDescription,
+        payload: dict[str, Any],
+    ) -> Any:
+        async with self._lock:
+            return await self.hass.async_add_executor_job(
+                self._send_ir_payload,
+                hub.dev_id,
+                payload,
+            )
+
+    async def async_learn_ir_code(
+        self,
+        hub: TuyaDeviceDescription,
+        *,
+        timeout: float = IR_LEARN_TIMEOUT_SECONDS,
+    ) -> str:
+        hub = self.devices.get(hub.dev_id) or hub
+        hub.dps[IR_RECEIVE_DP_ID] = None
+        wait_task = self.hass.loop.create_task(
+            self._async_wait_for_ir_code(hub.dev_id, timeout)
+        )
+        try:
+            await self.async_send_ir_payload(hub, {"control": "study"})
+            return await wait_task
+        finally:
+            if not wait_task.done():
+                wait_task.cancel()
+                try:
+                    await wait_task
+                except asyncio.CancelledError:
+                    pass
+            try:
+                await self.async_send_ir_payload(hub, {"control": "study_exit"})
+            except Exception:
+                _LOGGER.debug(
+                    "Unable to stop Tuya IR learning for %s",
+                    hub.dev_id,
+                    exc_info=True,
+                )
+
+    async def _async_wait_for_ir_code(self, hub_dev_id: str, timeout: float) -> str:
+        hub = self.devices.get(hub_dev_id)
+        previous = hub.dps.get(IR_RECEIVE_DP_ID) if hub else None
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+
+        def listener(dev_id: str, changed: dict[str, Any]) -> None:
+            if dev_id != hub_dev_id or IR_RECEIVE_DP_ID not in changed or future.done():
+                return
+            code = changed.get(IR_RECEIVE_DP_ID)
+            if code and code != previous:
+                future.set_result(str(code))
+
+        remove_listener = self.async_add_dps_listener(listener)
+        try:
+            if hub:
+                current = hub.dps.get(IR_RECEIVE_DP_ID)
+                if current and current != previous:
+                    return str(current)
+            return await asyncio.wait_for(future, timeout)
+        finally:
+            remove_listener()
 
     def _status(self, dev_id: str) -> dict[str, Any]:
         response = self._status_once(dev_id)
@@ -1046,6 +1142,15 @@ class TuyaLocalRuntime:
             )
             self._tinytuya_devices.pop(hub.dev_id, None)
             response = self._publish_ir_dps_once(action)
+        if _is_key_or_version_error(response) and _is_dp201_ir_action(action):
+            _LOGGER.warning(
+                "Tuya IR hub %s returned a key/version response after publishing %s; "
+                "treating the DP201 fire-and-forget IR command as sent: %s",
+                action.hub_dev_id,
+                action.action_name,
+                response,
+            )
+            return None
         if _is_unexpected_payload_error(response):
             _LOGGER.warning(
                 "Tuya IR hub %s returned an unexpected payload after publishing %s; "
@@ -1065,6 +1170,13 @@ class TuyaLocalRuntime:
             )
 
         normalized_dps = _normalize_command_dps(action.action_dps)
+        if set(normalized_dps) == {"201"}:
+            _close_tinytuya_device(self._tinytuya_devices.pop(action.hub_dev_id, None))
+            device = self._tinytuya_device(action.hub_dev_id)
+            if not device:
+                raise RuntimeError(
+                    f"IR hub {action.hub_dev_id} is missing local metadata or IP"
+                )
         _LOGGER.debug(
             "Publishing Tuya IR action %s to hub %s for remote %s with DPS %s",
             action.action_name,
@@ -1109,6 +1221,32 @@ class TuyaLocalRuntime:
                 )
             else:
                 response = device.set_status(value, switch=switch)
+        return response
+
+    def _send_ir_payload(self, hub_dev_id: str, payload: dict[str, Any]) -> Any:
+        hub = self.devices.get(hub_dev_id)
+        if not hub:
+            raise RuntimeError(f"IR hub {hub_dev_id} is no longer available")
+        self._release_state_stream_for_command(hub.dev_id)
+        value = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        _close_tinytuya_device(self._tinytuya_devices.pop(hub.dev_id, None))
+        response = self._set_dp_once(hub.dev_id, int(IR_SEND_DP_ID), value)
+        if _is_key_or_version_error(response) or _is_unexpected_payload_error(response):
+            _LOGGER.debug(
+                "Retrying Tuya IR payload via hub %s after response %s",
+                hub.dev_id,
+                response,
+            )
+            _close_tinytuya_device(self._tinytuya_devices.pop(hub.dev_id, None))
+            response = self._set_dp_once(hub.dev_id, int(IR_SEND_DP_ID), value)
+        if _is_key_or_version_error(response) or _is_unexpected_payload_error(response):
+            _LOGGER.warning(
+                "Tuya IR hub %s returned %s after DP201 payload; treating "
+                "fire-and-forget command as sent",
+                hub.dev_id,
+                response,
+            )
+            return None
         return response
 
     def _try_child_protocol_fallback(
@@ -1430,6 +1568,10 @@ def _is_unexpected_payload_error(response: Any) -> bool:
     return "unexpected payload" in text
 
 
+def _is_dp201_ir_action(action: TuyaIrAction) -> bool:
+    return set(map(str, action.action_dps)) == {"201"}
+
+
 def _call_tinytuya_writer(method: Any, *args: Any, nowait: bool, **kwargs: Any) -> Any:
     try:
         return method(*args, nowait=nowait, **kwargs)
@@ -1627,6 +1769,26 @@ def _is_fan_device(device: TuyaDeviceDescription) -> bool:
     ):
         return True
     return False
+
+
+def _looks_like_ir_hub(device: TuyaDeviceDescription) -> bool:
+    if not device.is_hub:
+        return False
+    if IR_SEND_DP_ID in device.dps or IR_RECEIVE_DP_ID in device.dps:
+        return True
+    text = _device_text(device)
+    return any(
+        marker in text
+        for marker in (
+            "infrared",
+            "ir blaster",
+            "ir remote",
+            "remote control",
+            "universal remote",
+            "hong ngoai",
+            "irrf",
+        )
+    )
 
 
 def _ascii_fold(value: str) -> str:

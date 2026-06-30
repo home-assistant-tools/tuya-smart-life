@@ -12,6 +12,7 @@ PLATFORMS = [
     Platform.LIGHT,
     Platform.MEDIA_PLAYER,
     Platform.BUTTON,
+    Platform.REMOTE,
 ]
 
 CONF_APP_ID = "app_id"
