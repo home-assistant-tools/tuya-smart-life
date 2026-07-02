@@ -98,7 +98,7 @@ class TuyaIrHubRemote(RemoteEntity):
     @property
     def available(self) -> bool:
         hub = self.current_hub
-        return bool(hub and hub.ip and hub.local_key) and self._local_ok is not False
+        return self.runtime.local.has_local_path(hub) and self._local_ok is not False
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

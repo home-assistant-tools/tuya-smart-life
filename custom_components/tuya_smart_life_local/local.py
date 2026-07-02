@@ -88,6 +88,21 @@ IR_CLIMATE_ACTION_MARKERS = (
     "temperature",
     "wind",
 )
+TEMPERATURE_DP_MARKERS = (
+    "airtemp",
+    "ambienttemp",
+    "currenttemp",
+    "temp_current",
+    "temperature",
+    "temp",
+    "va_temperature",
+)
+HUMIDITY_DP_MARKERS = (
+    "airhumidity",
+    "humidity",
+    "hum",
+    "va_humidity",
+)
 BINARY_CONTACT_CATEGORY_MARKERS = ("mcs", "contact", "door", "window", "cuasensor")
 BINARY_MOTION_CATEGORY_MARKERS = ("pir", "motion", "movement", "body")
 BINARY_PRESENCE_CATEGORY_MARKERS = ("hps", "presence", "occupancy", "human", "radar")
@@ -191,6 +206,7 @@ class TuyaLocalRuntime:
         self._scan_task: asyncio.Task[None] | None = None
         self._state_stream_tasks: dict[str, asyncio.Task[None]] = {}
         self._state_callbacks: list[Callable[[str, dict[str, Any]], None]] = []
+        self._metadata_callbacks: list[Callable[[], None]] = []
         self._last_heartbeat: dict[str, float] = {}
         self._stream_synced: set[str] = set()
         self._last_force_scan = 0.0
@@ -358,6 +374,7 @@ class TuyaLocalRuntime:
         self._tinytuya_devices.clear()
         self._ensure_state_stream_tasks()
         self._save_local_cache()
+        self._notify_metadata_listeners()
 
     def update_ir_actions(self, actions: list[TuyaIrAction]) -> None:
         self.ir_actions = {action.unique_id: action for action in actions}
@@ -373,6 +390,22 @@ class TuyaLocalRuntime:
                 self._state_callbacks.remove(listener)
 
         return remove_listener
+
+    def async_add_metadata_listener(
+        self,
+        listener: Callable[[], None],
+    ) -> CALLBACK_TYPE:
+        self._metadata_callbacks.append(listener)
+
+        def remove_listener() -> None:
+            if listener in self._metadata_callbacks:
+                self._metadata_callbacks.remove(listener)
+
+        return remove_listener
+
+    def _notify_metadata_listeners(self) -> None:
+        for listener in list(self._metadata_callbacks):
+            self.hass.loop.call_soon_threadsafe(listener)
 
     def _ensure_state_stream_tasks(self) -> None:
         desired = self._state_stream_device_ids()
@@ -719,6 +752,7 @@ class TuyaLocalRuntime:
             )
             self._ensure_state_stream_tasks()
             self._save_local_cache()
+            self._notify_metadata_listeners()
 
     def _save_local_cache(self) -> None:
         devices: dict[str, dict[str, str]] = {}
@@ -772,7 +806,7 @@ class TuyaLocalRuntime:
     def switch_button_dps(self) -> list[tuple[TuyaDeviceDescription, str, bool, str]]:
         items: list[tuple[TuyaDeviceDescription, str, bool, str]] = []
         for device in self.devices.values():
-            if not device.local_controllable or device.is_hub:
+            if not device.local_controllable or device.is_hub or _looks_like_ir_hub(device):
                 continue
             for dp_id, value in device.dps.items():
                 if _is_fan_device(device) and str(dp_id) == FAN_POWER_DP_ID:
@@ -783,6 +817,31 @@ class TuyaLocalRuntime:
                     items.append(
                         (device, dp_id, value, _switch_button_label(device, dp_id))
                     )
+        return items
+
+    def environment_sensor_dps(
+        self,
+    ) -> list[tuple[TuyaDeviceDescription, str, float, str, str]]:
+        items: list[tuple[TuyaDeviceDescription, str, float, str, str]] = []
+        for device in self.devices.values():
+            if not device.local_controllable:
+                continue
+            for dp_id, value in device.dps.items():
+                kind = _environment_sensor_kind(device, dp_id)
+                if not kind:
+                    continue
+                native_value = _normalize_environment_sensor_value(value, kind)
+                if native_value is None:
+                    continue
+                items.append(
+                    (
+                        device,
+                        str(dp_id),
+                        native_value,
+                        kind,
+                        _environment_sensor_label(device, dp_id, kind),
+                    )
+                )
         return items
 
     def binary_sensor_dps(
@@ -831,16 +890,28 @@ class TuyaLocalRuntime:
         ]
 
     def hub_devices(self) -> list[TuyaDeviceDescription]:
-        return [device for device in self.devices.values() if device.is_hub]
+        return [
+            device
+            for device in self.devices.values()
+            if device.is_hub or _looks_like_ir_hub(device)
+        ]
 
     def ir_hub_devices(self) -> list[TuyaDeviceDescription]:
         hub_ids = {action.hub_dev_id for action in self.ir_actions.values()}
         hubs = [
             device
             for device in self.devices.values()
-            if device.is_hub and (device.dev_id in hub_ids or _looks_like_ir_hub(device))
+            if device.dev_id in hub_ids or _looks_like_ir_hub(device)
         ]
         return sorted(hubs, key=lambda device: (device.home_name, device.name))
+
+    def has_local_path(self, device: TuyaDeviceDescription | None) -> bool:
+        if not device:
+            return False
+        if device.is_child:
+            parent = self.devices.get(device.parent_dev_id or "")
+            return bool(parent and parent.ip and parent.local_key)
+        return bool(device.ip and device.local_key)
 
     def boolean_dps(self) -> list[tuple[TuyaDeviceDescription, str, bool]]:
         return [
@@ -1759,6 +1830,51 @@ def _close_tinytuya_device(device: Any | None) -> None:
             pass
 
 
+def _environment_sensor_kind(device: TuyaDeviceDescription, dp_id: Any) -> str | None:
+    if _looks_like_ir_hub(device):
+        if str(dp_id) == "101":
+            return "temperature"
+        if str(dp_id) == "102":
+            return "humidity"
+    name = _ascii_fold(device.dp_names.get(str(dp_id), "")).strip().lower()
+    dp_text = _ascii_fold(str(dp_id)).strip().lower()
+    text = " ".join((name, dp_text))
+    if any(marker in text for marker in TEMPERATURE_DP_MARKERS):
+        return "temperature"
+    if any(marker in text for marker in HUMIDITY_DP_MARKERS):
+        return "humidity"
+    return None
+
+
+def _normalize_environment_sensor_value(value: Any, kind: str) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if kind == "temperature" and abs(number) >= 100:
+        return number / 10
+    if kind == "humidity" and number > 100:
+        return number / 10
+    return number
+
+
+def _environment_sensor_label(
+    device: TuyaDeviceDescription,
+    dp_id: Any,
+    kind: str,
+) -> str:
+    name = device.dp_names.get(str(dp_id), "").strip()
+    if name:
+        return name
+    if kind == "temperature":
+        return "Temperature"
+    if kind == "humidity":
+        return "Humidity"
+    return f"DP {dp_id}"
+
+
 def _is_fan_device(device: TuyaDeviceDescription) -> bool:
     product_id = (device.product_id or "").strip().lower()
     if product_id in FAN_PRODUCT_IDS:
@@ -1772,7 +1888,7 @@ def _is_fan_device(device: TuyaDeviceDescription) -> bool:
 
 
 def _looks_like_ir_hub(device: TuyaDeviceDescription) -> bool:
-    if not device.is_hub:
+    if device.is_child:
         return False
     if IR_SEND_DP_ID in device.dps or IR_RECEIVE_DP_ID in device.dps:
         return True

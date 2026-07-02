@@ -58,6 +58,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     await _async_ensure_datapoint_http_server(hass)
 
+    entry.async_on_unload(
+        local_runtime.async_add_metadata_listener(
+            lambda: _async_notify_coordinator_metadata_update(coordinator)
+        )
+    )
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -78,6 +83,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _async_notify_coordinator_metadata_update(
+    coordinator: TuyaSmartLifeCoordinator,
+) -> None:
+    if coordinator.data is not None:
+        coordinator.async_set_updated_data(coordinator.data)
 
 
 def _ensure_hub_registry_entries(
@@ -178,6 +190,10 @@ def _merge_entry_homes(
         (device.dev_id, str(dp_id)): {"kind": kind, "label": label}
         for device, dp_id, _, kind, label in local_runtime.binary_sensor_dps()
     }
+    sensor_map = {
+        (device.dev_id, str(dp_id)): {"kind": kind, "label": label}
+        for device, dp_id, _, kind, label in local_runtime.environment_sensor_dps()
+    }
     context_map = {
         device.dev_id: {"state": state, "channels": channels}
         for device, state, channels in local_runtime.context_button_sensors()
@@ -200,6 +216,7 @@ def _merge_entry_homes(
             device,
             switch_map,
             binary_map,
+            sensor_map,
             context_map,
         )
 
@@ -228,6 +245,7 @@ def _device_datapoint_mapping(
     device: Any,
     switch_map: dict[tuple[str, str], str],
     binary_map: dict[tuple[str, str], dict[str, str]],
+    sensor_map: dict[tuple[str, str], dict[str, str]],
     context_map: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     datapoints: dict[str, Any] = {}
@@ -246,6 +264,10 @@ def _device_datapoint_mapping(
         if binary:
             mapped_as.append("binary_sensor")
             details["binary_sensor"] = binary
+        sensor = sensor_map.get((device.dev_id, dp_key))
+        if sensor:
+            mapped_as.append("sensor")
+            details["sensor"] = sensor
         datapoints[dp_key] = {
             "value": value,
             "value_type": type(value).__name__,
@@ -271,6 +293,11 @@ def _device_datapoint_mapping(
         "home_name": device.home_name,
         "kind": device.kind,
         "product_id": device.product_id,
+        "category": device.category,
+        "category_code": device.category_code,
+        "category_code_2": device.category_code_2,
+        "category_code_3": device.category_code_3,
+        "uiid": device.uiid,
         "parent_dev_id": device.parent_dev_id,
         "node_id": device.node_id,
         "online": device.online,
@@ -337,6 +364,10 @@ def _remove_stale_registry_entries(
     active_unique_ids.update(
         f"{device.dev_id}_{dp_id}_{kind}"
         for device, dp_id, _, kind, _ in local_runtime.binary_sensor_dps()
+    )
+    active_unique_ids.update(
+        f"{device.dev_id}_{dp_id}_{kind}"
+        for device, dp_id, _, kind, _ in local_runtime.environment_sensor_dps()
     )
     active_unique_ids.update(
         f"{device.dev_id}_action"

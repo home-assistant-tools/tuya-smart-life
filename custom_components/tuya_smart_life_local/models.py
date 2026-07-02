@@ -53,6 +53,11 @@ class TuyaDeviceDescription:
     mac: str | None
     uuid: str | None
     product_id: str | None
+    category: str | None
+    category_code: str | None
+    category_code_2: str | None
+    category_code_3: str | None
+    uiid: str | None
     kind: str
     parent_dev_id: str | None
     node_id: str | None
@@ -214,6 +219,30 @@ def dps_from_raw(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     }
 
 
+def text_from_raw(raw: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = nested_value(raw, key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def nested_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = nested_value(child, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = nested_value(child, key)
+            if found is not None:
+                return found
+    return None
+
+
 def local_ip_from_raw(raw: dict[str, Any]) -> str | None:
     ip = raw.get("ip")
     if not ip:
@@ -254,6 +283,22 @@ def device_from_raw(
         mac=raw.get("mac") or None,
         uuid=raw.get("uuid") or None,
         product_id=raw.get("productId") or None,
+        category=text_from_raw(
+            raw,
+            (
+                "category",
+                "categoryId",
+                "category_id",
+                "productCategory",
+            ),
+        ),
+        category_code=text_from_raw(
+            raw,
+            ("categoryCode", "category_code", "category_code_1"),
+        ),
+        category_code_2=text_from_raw(raw, ("categoryCode2", "category_code_2")),
+        category_code_3=text_from_raw(raw, ("categoryCode3", "category_code_3")),
+        uiid=text_from_raw(raw, ("uiid", "uiId", "ui_id")),
         kind=kind,
         parent_dev_id=parent_id,
         node_id=device_node_id(raw),

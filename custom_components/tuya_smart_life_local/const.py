@@ -8,6 +8,7 @@ PLATFORMS = [
     Platform.FAN,
     Platform.BINARY_SENSOR,
     Platform.SENSOR,
+    Platform.LOCK,
     Platform.CLIMATE,
     Platform.LIGHT,
     Platform.MEDIA_PLAYER,
@@ -28,10 +29,19 @@ CONF_OS_SYSTEM = "os_system"
 CONF_PACKAGE_NAME = "package_name"
 CONF_SELECTED_HOME_IDS = "selected_home_ids"
 CONF_SDK_VERSION = "sdk_version"
+CONF_MQTT_BROKER = "mqtt_broker"
+CONF_MQTT_CLIENT_ID = "mqtt_client_id"
+CONF_MQTT_ENABLED = "mqtt_enabled"
+CONF_MQTT_PASSWORD = "mqtt_password"
+CONF_MQTT_UID = "mqtt_uid"
+CONF_MQTT_USERNAME = "mqtt_username"
+CONF_MQTT_UNLOCK_DPS = "mqtt_unlock_dps"
+CONF_MQTT_UNLOCK_ENABLED = "mqtt_unlock_enabled"
 
 DEFAULT_APP_ID = "3cxxt3au9x33ytvq3h9j"
 DEFAULT_API_REGION = "auto"
 DEFAULT_APP_VERSION = "7.8.6"
+DEFAULT_MQTT_BROKER = "mqtts://m1.tuyaus.com:8883"
 DEFAULT_APP_RN_VERSION = "5.84"
 DEFAULT_CH_KEY = "3f7060ea"
 DEFAULT_COUNTRY_CODE = "84"

@@ -40,6 +40,7 @@ DEVICE_GROUP_API = ("m.life.my.group.device.group.list", "4.3")
 DEVICE_RELATION_API = ("m.life.my.group.device.relation.list", "3.2")
 LOCAL_DEVICE_API = ("m.life.app.smart.local.device.list", "1.1")
 ENERGY_DEVICE_API = ("m.energy.home.device.list", "3.0")
+DEVICE_PRODUCT_REF_API = ("thing.m.device.product.ref.list", "1.0")
 ACTION_DEVICE_API = ("thing.m.linkage.dev.list", "3.0")
 ACTION_DEVICE_API_V4 = ("thing.m.linkage.dev.list", "4.0")
 ACTION_FUNCTION_API = ("thing.m.linkage.function.list", "3.0")
@@ -593,6 +594,7 @@ class TuyaSmartLifeMobileApi:
                 len(raw_devices),
             )
 
+        self._merge_home_product_refs(session, home, matching_devices)
         parent_ids = {
             parent_id
             for device in matching_devices
@@ -604,6 +606,44 @@ class TuyaSmartLifeMobileApi:
             device_from_raw(device, home, parent_ids)
             for device in matching_devices
         ]
+
+    def _merge_home_product_refs(
+        self,
+        session: TuyaSession,
+        home: TuyaHome,
+        devices: list[dict[str, Any]],
+    ) -> None:
+        product_ids = sorted(
+            {
+                str(product_id)
+                for device in devices
+                for product_id in [device.get("productId")]
+                if product_id
+            }
+        )
+        if not product_ids:
+            return
+
+        try:
+            _, response = self.request(
+                *DEVICE_PRODUCT_REF_API,
+                {"gid": home.id, "productIds": product_ids},
+                sid=session.sid,
+                extra={"gid": home.id},
+            )
+            self._raise_for_response(response, f"product refs for {home.name}")
+        except TuyaMobileApiError as err:
+            _LOGGER.debug("Tuya product refs for %s failed: %s", home.id, err)
+            return
+
+        product_refs = _product_ref_map(response.get("result"))
+        if not product_refs:
+            return
+        for device in devices:
+            product_id = device.get("productId")
+            ref = product_refs.get(str(product_id)) if product_id else None
+            if ref:
+                device["productInfo"] = ref
 
     def list_action_device_ids(
         self,
@@ -2014,6 +2054,26 @@ def _looks_like_ir_device(raw: dict[str, Any]) -> bool:
         return False
     text = json.dumps(raw, ensure_ascii=False, default=str).lower()
     return any(marker.lower() in text for marker in IR_TEXT_MARKERS)
+
+
+def _product_ref_map(value: Any) -> dict[str, dict[str, Any]]:
+    refs: dict[str, dict[str, Any]] = {}
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            product_id = _first_text(
+                current,
+                ("id", "productId", "product_id", "pid", "productKey"),
+            )
+            if product_id:
+                refs[product_id] = current
+                continue
+            pending.extend(current.values())
+            continue
+        if isinstance(current, list):
+            pending.extend(current)
+    return refs
 
 
 def _infer_ir_hub_id(

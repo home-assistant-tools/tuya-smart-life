@@ -164,7 +164,7 @@ class TuyaIrClimateEntity(
         if not climate:
             return False
         hub = self.runtime.local.devices.get(climate.hub_dev_id)
-        return bool(hub and hub.ip and hub.local_key)
+        return self.runtime.local.has_local_path(hub)
 
     @property
     def hvac_mode(self) -> HVACMode:
